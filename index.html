@@ -21,7 +21,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <style>
 :root{
-  --bg:#F6F5F2; --surface:#FFFFFF; --surface-2:#F0EEE9; --ink:#15171C; --muted:#696E78; --faint:#A2A6AE; --line:#E5E2DB;
+  --bg:#F6F5F2; --surface:#FFFFFF; --surface-2:#F0EEE9; --ink:#15171C; --muted:#5E636E; --faint:#767C87; --line:#E5E2DB;
   --accent:#FF5A36; --accent-ink:#FFFFFF; --accent-soft:#FFEDE7; --accent-2:#FF8A3D;
   --ok:#0FA968; --ok-soft:#E2F7EC; --ok-ink:#0A6B43;
   --sun:#E5484D; --sat:#3E63DD;
@@ -31,7 +31,7 @@
 }
 @media (prefers-color-scheme:dark){
   :root{
-    --bg:#0E1014; --surface:#171A20; --surface-2:#20242C; --ink:#F2F3F5; --muted:#9CA2AD; --faint:#6A707B; --line:#2A2F38;
+    --bg:#0E1014; --surface:#171A20; --surface-2:#20242C; --ink:#F2F3F5; --muted:#ABB1BB; --faint:#949CA9; --line:#2A2F38;
     --accent:#FF6A48; --accent-ink:#FFFFFF; --accent-soft:#3A1F17; --accent-2:#FF9A55;
     --ok:#34D399; --ok-soft:#10301F; --ok-ink:#A7F3D0;
     --sun:#FF7A7D; --sat:#8EA5FF;
@@ -294,9 +294,19 @@ const store = {
 const hosted = () => store.get('yaksok:hosted', []);
 // 화면에 보이는 개수와 별개로, 예전 약속을 관리하는 데 필요한 열쇠는 보관해요.
 const rememberHosted = ev => store.set('yaksok:hosted', [...hosted().filter(x => x.id !== ev.id), ev]);
+function confirmHosted(id, metadata) {
+  if (!metadata || metadata.hasPendingWrites || metadata.fromCache !== false) return false;
+  const entries = hosted();
+  if (!entries.some(entry => entry.id === id && entry.pending)) return false;
+  return store.set('yaksok:hosted', entries.map(entry => {
+    if (entry.id !== id || !entry.pending) return entry;
+    const { pending, ...confirmed } = entry;
+    return confirmed;
+  }));
+}
 const isHost = () => hosted().some(x => x.id === S.id);
-// 삭제 열쇠: 약속을 만든 브라우저에만 저장돼요. 이 열쇠가 있어야 서버가 삭제를 허락해요.
-const hostKey = () => (hosted().find(x => x.id === S.id) || {}).key || null;
+// 관리 열쇠: 약속을 만든 브라우저에만 저장하고, 주최자 변경 때 서버에서 확인해요.
+const hostKey = (id = S.id) => (hosted().find(x => x.id === id) || {}).key || null;
 function restoreHostKey(id, rawKey) {
   const problem = message => Object.assign(new Error(message), { userMessage: message });
   if (typeof id !== 'string' || id !== S.id || !/^[a-z0-9]{10,24}$/.test(id)) throw problem('현재 보고 있는 약속에서 복구해 주세요.');
@@ -310,7 +320,7 @@ function restoreHostKey(id, rawKey) {
 }
 
 // ===== 상태 =====
-const S = { view: 'loading', id: null, ev: null, unsub: null, me: null, sel: new Set(), confirmEmpty: false, saving: false, wasFinal: null, celebrated: '', hostOpen: false, draft: null, rankAll: false, deleting: false };
+const S = { view: 'loading', id: null, ev: null, unsub: null, me: null, sel: new Set(), confirmEmpty: false, saving: false, wasFinal: null, celebrated: '', hostOpen: false, hostAuthError: false, draft: null, rankAll: false, deleting: false, pickSaved: new Set(), pickId: null, pickMember: null };
 const dropHosted = id => store.set('yaksok:hosted', hosted().filter(x => x.id !== id));
 
 // ===== 파이어베이스 =====
@@ -323,29 +333,46 @@ async function fb() {
   FB = { ...fs, db: fs.getFirestore(app) };
   return FB;
 }
-const evRef = () => FB.doc(FB.db, 'events', S.id);
+const evRef = (id = S.id) => FB.doc(FB.db, 'events', id);
 
 async function watch() {
+  const id = S.id;
   try {
     await fb();
+    if (S.id !== id) return;
     S.unsub?.();
-    S.unsub = FB.onSnapshot(evRef(), snap => {
-      if (S.deleting) return;
+    S.unsub = FB.onSnapshot(evRef(id), { includeMetadataChanges: true }, snap => {
+      if (S.id !== id || S.deleting) return;
       // 서버가 아직 확인하지 않은 '없어짐/삭제됨'은 무시 (거절되면 원래대로 돌아와요)
       const pending = snap.metadata && snap.metadata.hasPendingWrites;
-      if (!snap.exists()) { if (pending) return; S.ev = null; if (S.view !== 'created') go('notfound'); return; }
+      if (!snap.exists()) { if (pending) return; S.ev = null; if (S.view !== 'created') go('notfound', true); return; }
       const d = snap.data();
-      if (d.deleted) { if (pending) return; S.ev = null; dropHosted(S.id); go('deleted'); return; }
+      if (d.deleted) { if (pending) return; S.ev = null; dropHosted(id); go('deleted', true); return; }
+      confirmHosted(id, snap.metadata);
       S.ev = normalize(d);
       onData();
-    }, err => { console.error(err); go('error'); });
-  } catch (e) { console.error(e); go('error'); }
+    }, () => { if (S.id === id) go('error', true); });
+  } catch { if (S.id === id) go('error', true); }
 }
 function normalize(d) {
+  const validDate = k => {
+    if (typeof k !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(k)) return false;
+    const [year, month, day] = k.split('-').map(Number);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  };
+  const members = Array.isArray(d.members) ? d.members.filter(m => m && typeof m.id === 'string' && m.id && typeof m.name === 'string' && m.name).map(m => ({ id: m.id, name: m.name, ...(m.req ? { req: true } : {}) })) : [];
+  const source = d.responses && typeof d.responses === 'object' && !Array.isArray(d.responses) ? d.responses : {};
+  const responses = Object.fromEntries(members.flatMap(m => {
+    const response = Object.prototype.hasOwnProperty.call(source, m.id) && source[m.id];
+    if (!response || typeof response !== 'object' || Array.isArray(response) || !Array.isArray(response.dates)) return [];
+    const dates = [...new Set(response.dates.filter(k => validDate(k) && k >= d.start && k <= d.end))];
+    return [[m.id, { ...response, dates }]];
+  }));
   return {
     title: String(d.title || '약속'), start: d.start, end: d.end,
-    members: Array.isArray(d.members) ? d.members.filter(m => m && m.id && m.name).map(m => ({ id: m.id, name: String(m.name), ...(m.req ? { req: true } : {}) })) : [],
-    responses: d.responses && typeof d.responses === 'object' ? d.responses : {},
+    members,
+    responses,
     fixed: typeof d.fixed === 'string' ? d.fixed : null,
     closed: !!d.closed,
     deadline: typeof d.deadline === 'string' ? d.deadline : null,
@@ -382,7 +409,24 @@ function dday(ev) {
 }
 
 // ===== 화면 전환 =====
-function go(view) { S.view = view; render(false); window.scrollTo(0, 0); }
+function isPickDirty() {
+  if (S.view !== 'pick' || S.pickId !== S.id || S.pickMember !== S.me) return false;
+  const saved = S.pickSaved || new Set();
+  return S.sel.size !== saved.size || [...S.sel].some(k => !saved.has(k));
+}
+function warnBeforeUnload(e) { if (isPickDirty()) { e.preventDefault(); e.returnValue = ''; } }
+let unloadGuard = false;
+function syncPickExitGuard() {
+  const dirty = isPickDirty();
+  if (dirty === unloadGuard || typeof window.addEventListener !== 'function' || typeof window.removeEventListener !== 'function') return;
+  window[dirty ? 'addEventListener' : 'removeEventListener']('beforeunload', warnBeforeUnload);
+  unloadGuard = dirty;
+}
+function go(view, force = false) {
+  if (!force && S.view === 'create' && S.saving) return false;
+  if (!force && view !== S.view && isPickDirty() && typeof window.confirm === 'function' && !window.confirm('선택한 날짜가 아직 저장되지 않았어요. 저장하지 않고 나갈까요?')) return false;
+  S.view = view; syncPickExitGuard(); render(false); window.scrollTo(0, 0); return true;
+}
 let deferred = false;
 function render(soft) {
   const a = document.activeElement;
@@ -436,7 +480,7 @@ function rankCard(st, title, host) {
         h('div', { class: 'meta' }, r.no.length ? `${r.no.map(m => m.name).join(', ')} 안 됨` : '모두 가능'),
         r.reqNo.length ? h('div', { class: 'warn' }, `필참 ${r.reqNo.map(m => m.name).join(', ')} 안 됨`) : null),
       h('span', { class: 'cnt' }, `${r.c}/${st.n}`),
-      host && r.k !== S.ev.fixed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => fixDate(r.k) }, '이 날로') : null))),
+      host && r.k !== S.ev.fixed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: !hostKey() || S.hostAuthError, onclick: () => fixDate(r.k) }, '이 날로') : null))),
     st.rows.length > 5 ? h('button', { class: 'btn btn-text more', type: 'button', onclick: () => { S.rankAll = !S.rankAll; render(true); } }, S.rankAll ? '접기' : `더 보기 (${st.rows.length - 5}개)`) : null);
 }
 function dateTable(st) {
@@ -453,46 +497,46 @@ function hostKeyRecovery(keyed) {
     e.preventDefault();
     try {
       restoreHostKey(id, input.value);
-      input.value = ''; input.blur(); S.hostOpen = true; render(true);
+      input.value = ''; input.blur(); S.hostOpen = true; S.hostAuthError = false; render(true);
       toast('복구 코드를 이 브라우저에 저장했어요');
     } catch (error) { err.textContent = error.userMessage || '복구 코드를 저장하지 못했어요. 다시 눌러주세요.'; }
   } },
-    h('p', { class: 'note' }, '약속 링크만으로는 삭제 권한을 복구할 수 없어요. 관리자에게 받은 코드를 저장해 주세요. 코드는 삭제할 때 서버에서 확인해요.'),
+    h('p', { class: 'note' }, '약속 링크만으로는 관리 권한을 복구할 수 없어요. 관리자에게 받은 코드를 저장해 주세요. 명단·마감·확정·삭제를 변경할 때 서버에서 확인해요.'),
     h('label', { class: 'field' }, h('span', { class: 'label' }, '복구 코드'), input),
     err,
     h('button', { class: 'btn btn-ghost btn-sm', type: 'submit', style: 'align-self:flex-start' }, '이 브라우저에 코드 저장'));
   return h('div', { class: 'host-sec' },
-    !keyed ? h('p', { class: 'note' }, '이 브라우저에 이 약속의 삭제 권한이 없어요.') : null,
-    h('details', { class: 'card', open: !keyed, style: 'box-shadow:none' },
-      h('summary', null, '삭제 권한 복구'), h('div', { class: 'host-body' }, form)));
+    !keyed || S.hostAuthError ? h('p', { class: 'note' }, '관리 권한을 복구하면 명단·마감·확정·삭제를 바꿀 수 있어요. 날짜 응답은 그대로 할 수 있어요.') : null,
+    h('details', { class: 'card', open: !keyed || S.hostAuthError, style: 'box-shadow:none' },
+      h('summary', null, '관리 권한 복구'), h('div', { class: 'host-body' }, form)));
 }
 function hostPanel(st) {
-  const ev = S.ev;
-  const input = h('input', { class: 'input', placeholder: '추가할 이름', maxlength: '12', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMember(input); } } });
-  const dl = h('input', { class: 'input', type: 'date', value: ev.deadline || '', min: todayKey(), max: ev.end, 'aria-label': '응답 마감 기한' });
+  const ev = S.ev, readonly = !hostKey() || S.hostAuthError;
+  const input = h('input', { class: 'input', placeholder: '추가할 이름', maxlength: '12', autocomplete: 'off', disabled: readonly, onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMember(input); } } });
+  const dl = h('input', { class: 'input', type: 'date', value: ev.deadline || '', min: todayKey(), max: ev.end, disabled: readonly, 'aria-label': '응답 마감 기한' });
   return h('details', { class: 'card', open: S.hostOpen, ontoggle: e => { S.hostOpen = e.currentTarget.open; } },
     h('summary', null, '주최자 메뉴'),
     h('div', { class: 'host-body' },
       h('div', { class: 'host-actions' },
         h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: share }, '링크 공유'),
         st.waiting.length && !st.final ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => nudge(st) }, '재촉 문구 복사') : null,
-        !st.final ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: closeEvent }, '지금 마감하고 결과 보기') : null,
-        ev.closed || st.expired ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => reopenEvent(st) }, '응답 다시 받기') : null,
-        ev.fixed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => fixDate(null) }, '확정 취소') : null),
+        !st.final ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: readonly, onclick: closeEvent }, '지금 마감하고 결과 보기') : null,
+        ev.closed || st.expired ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: readonly, onclick: () => reopenEvent(st) }, '응답 다시 받기') : null,
+        ev.fixed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: readonly, onclick: () => fixDate(null) }, '확정 취소') : null),
       h('div', { class: 'host-sec' }, h('div', { class: 'label' }, '응답 마감 기한'),
         h('div', { class: 'row' }, dl,
-          h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => setDeadline(dl.value || null) }, '저장'),
-          ev.deadline ? h('button', { class: 'btn btn-text btn-sm', type: 'button', onclick: () => setDeadline(null) }, '없애기') : null)),
+          h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: readonly, onclick: () => setDeadline(dl.value || null) }, '저장'),
+          ev.deadline ? h('button', { class: 'btn btn-text btn-sm', type: 'button', disabled: readonly, onclick: () => setDeadline(null) }, '없애기') : null)),
       h('div', { class: 'host-sec' }, h('div', { class: 'label' }, `참여자 ${ev.members.length}명`),
         h('p', { class: 'note' }, '★을 누르면 필참이 돼요. 필참 인원이 다 되는 날이 순위 위로 올라와요.'),
         h('ul', { class: 'members' }, ev.members.map(m => h('li', null,
           h('span', null, m.name, ev.responses[m.id] ? h('span', { class: 'mini-done' }, ' · 완료') : null),
           h('span', { class: 'acts' },
-            h('button', { class: 'star', type: 'button', 'aria-pressed': String(!!m.req), onclick: () => toggleReq(m) }, m.req ? '★ 필참' : '☆ 필참'),
-            h('button', { class: 'x', type: 'button', onclick: e => removeMember(m, e.currentTarget) }, '빼기'))))),
-        h('div', { class: 'row' }, input, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => addMember(input) }, '추가'))),
+            h('button', { class: 'star', type: 'button', disabled: readonly, 'aria-pressed': String(!!m.req), onclick: () => toggleReq(m) }, m.req ? '★ 필참' : '☆ 필참'),
+            h('button', { class: 'x', type: 'button', disabled: readonly, onclick: e => removeMember(m, e.currentTarget) }, '빼기'))))),
+        h('div', { class: 'row' }, input, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', disabled: readonly, onclick: () => addMember(input) }, '추가'))),
       hostKey() ? h('div', { class: 'host-sec' },
-        h('button', { class: 'btn btn-danger btn-sm', type: 'button', style: 'align-self:flex-start', onclick: e => deleteEvent(e.currentTarget) }, '약속 삭제'),
+        h('button', { class: 'btn btn-danger btn-sm', type: 'button', disabled: readonly, style: 'align-self:flex-start', onclick: e => deleteEvent(e.currentTarget) }, '약속 삭제'),
         h('p', { class: 'note' }, '지우면 참여자들도 더 이상 볼 수 없고, 입력한 이름과 날짜도 같이 지워져요.')) : null,
       hostKeyRecovery(!!hostKey())));
 }
@@ -512,8 +556,9 @@ function home() {
       step('1', '약속 만들기', '약속 이름, 날짜 범위, 참여자만 적으면 끝'),
       step('2', '링크 보내기', '단톡방에 링크를 올리면 각자 들어와요'),
       step('3', '짝짝짝', '모두 고르면 다 같이 되는 날이 바로 떠요')),
-    mine.length ? h('div', { class: 'list' }, h('h2', { class: 'h-sm' }, '내가 만든 약속'),
-      mine.map(x => h('a', { class: 'card ev-row', href: '?id=' + x.id }, h('div', null, h('strong', null, x.title), h('span', { class: 'meta' }, `${fmtShort(x.start)} ~ ${fmtShort(x.end)}`)), h('span', { class: 'chev' }, '›')))) : null,
+    mine.length ? h('div', { class: 'list' }, h('h2', { class: 'h-sm' }, '이 브라우저에서 만든 약속'),
+      h('p', { class: 'note' }, '목록과 주최자 권한은 다른 기기·브라우저에 자동으로 공유되지 않아요.'),
+      mine.map(x => h('a', { class: 'card ev-row', href: '?id=' + x.id }, h('div', null, h('strong', null, x.title), h('span', { class: 'meta' }, `${fmtShort(x.start)} ~ ${fmtShort(x.end)}${x.pending ? ' · 생성 확인 필요' : ''}`)), h('span', { class: 'chev' }, '›')))) : null,
     privacy(),
     ctaBar(btn('새 약속 만들기', () => { resetDraft(); go('create'); })));
 }
@@ -523,6 +568,7 @@ function create() {
   if (!S.draft) resetDraft();
   const D = S.draft;
   const err = h('p', { class: 'err', role: 'alert' });
+  const recoveryArea = h('div');
   const rangeInfo = h('p', { class: 'note' });
   const chips = h('div', { class: 'chips' });
   const title = h('input', { class: 'input', placeholder: '예: 11월 팀 회식', maxlength: '40', value: D.title, oninput: e => { D.title = e.target.value; sync(); } });
@@ -553,29 +599,48 @@ function create() {
     if (span > 92) msg = '기간은 최대 92일까지 고를 수 있어요.';
     else if (D.deadline && D.deadline < todayKey()) msg = '응답 마감일은 오늘 이후로 정해주세요.';
     else if (D.deadline && D.end && D.deadline > D.end) msg = '응답 마감일은 날짜 범위 마지막 날보다 늦을 수 없어요.';
-    err.textContent = msg;
-    make.disabled = S.saving || !!msg || !D.title.trim() || !span || count < 2;
+    err.textContent = D.createError || msg;
+    make.disabled = S.saving || D.creationPending || !!msg || !D.title.trim() || !span || count < 2;
+    recoveryArea.replaceChildren(...(D.recovery ? [h('div', { class: 'card host-sec' }, h('p', { class: 'note' }, '복구 코드는 이 약속을 관리하는 데 필요해요. 다른 사람에게 공유하지 마세요.'),
+      h('input', { class: 'input', type: 'text', readonly: true, value: D.recovery.key, 'aria-label': '주최자 복구 코드' }),
+      btn('생성한 약속 확인', () => { location.href = '?id=' + D.recovery.id; }, 'btn-ghost'))] : []));
   }
   async function submit() {
+    if (S.saving || D.creationPending) return;
     add();
     if (make.disabled) return;
-    S.saving = true; sync(); make.textContent = '만드는 중…';
+    D.createError = ''; S.saving = true; sync(); make.textContent = '만드는 중…';
+    let entry = null, committed = false;
     try {
-      await fb();
       const id = rid(12), key = rid(24);
       const data = { title: D.title.trim(), start: D.start, end: D.end, members: D.names.map(n => ({ id: 'm' + rid(6), name: n, ...(D.req.has(n) ? { req: true } : {}) })), responses: {}, fixed: null, closed: false, deadline: D.deadline || null };
+      entry = { id, title: data.title, start: data.start, end: data.end, key, pending: true };
+      // 원격 생성 전에 관리 열쇠가 이 브라우저에 실제로 남았는지 확인해요.
+      if (!rememberHosted(entry) || hostKey(id) !== key) throw Object.assign(new Error('local-storage'), { localStorageFailure: true });
+      await fb();
       const batch = FB.writeBatch(FB.db);
       batch.set(FB.doc(FB.db, 'events', id), { ...data, createdAt: FB.serverTimestamp(), updatedAt: FB.serverTimestamp() });
       batch.set(FB.doc(FB.db, 'hostkeys', id), { key });
+      committed = true;
       await batch.commit();
+      // 실패하더라도 먼저 보관한 pending 기록과 열쇠는 남겨 복구할 수 있게 해요.
       rememberHosted({ id, title: data.title, start: data.start, end: data.end, key });
+      if (hostKey(id) !== key) throw Object.assign(new Error('local-storage'), { localStorageFailure: true });
       history.replaceState(null, '', '?id=' + id);
-      S.id = id; S.me = null; S.ev = normalize(data); S.wasFinal = false; S.draft = null;
-      go('created');
+      S.id = id; S.me = null; S.ev = normalize(data); S.wasFinal = false; S.draft = null; S.hostAuthError = false;
+      go('created', true);
       watch();
     } catch (e) {
-      console.error(e);
-      err.textContent = '만들지 못했어요. 인터넷 연결을 확인하고 다시 눌러주세요.';
+      const denied = ['permission-denied', 'unauthenticated', 'invalid-argument'].some(code => e?.code === code || e?.code === 'firestore/' + code);
+      if (!committed || denied) {
+        if (entry) store.set('yaksok:hosted', hosted().filter(x => x.id !== entry.id || x.key !== entry.key));
+        D.createError = e?.localStorageFailure ? '관리 정보를 이 브라우저에 저장하지 못해 약속을 만들지 않았어요. 저장 공간이나 비공개 모드 설정을 확인하고 다시 눌러주세요.' : '약속을 만들지 못했어요. 입력한 내용은 그대로예요. 연결을 확인하고 다시 눌러주세요.';
+      } else {
+        // 응답만 유실됐을 수 있어 새 약속을 중복 생성하거나 열쇠를 지우지 않아요.
+        D.creationPending = true;
+        D.recovery = entry;
+        D.createError = e?.localStorageFailure ? '약속은 생성됐지만 관리 정보를 다시 확인하지 못했어요. 이 화면을 닫기 전에 아래 복구 코드를 안전한 곳에 복사해 주세요.' : '연결이 끊겨 생성 여부를 확인하지 못했어요. 주최자 기록과 복구 코드를 보관했으니 홈의 약속 목록에서 먼저 확인해 주세요.';
+      }
     } finally { S.saving = false; make.textContent = '약속 만들고 링크 받기'; sync(); }
   }
   sync();
@@ -591,12 +656,13 @@ function create() {
       h('div', { class: 'field' }, h('span', { class: 'label' }, '누구랑 볼까요? (참여자 명단)'),
         h('div', { class: 'row' }, nm, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: add, style: 'min-height:52px' }, '추가')),
         chips,
-        h('p', { class: 'note' }, '내 이름도 꼭 넣어주세요. 꼭 와야 하는 사람은 이름을 눌러 ★필참으로 표시해요.')),
-      h('div', { class: 'field' }, h('span', { class: 'label' }, '응답 마감일 (선택)'),
-        dl,
-        h('div', { class: 'pills' }, dlPresets),
-        dlInfo)),
+        h('p', { class: 'note' }, '내 이름 포함 최소 2명. 꼭 와야 하는 사람은 이름을 눌러 ★필참으로 표시해요.')),
+      h('details', { class: 'card', open: !!D.deadline, style: 'padding:14px;box-shadow:none' }, h('summary', null, '응답 마감일 (선택)'),
+        h('div', { class: 'field', style: 'margin-top:14px' }, dl,
+          h('div', { class: 'pills' }, dlPresets),
+          dlInfo))),
     err,
+    recoveryArea,
     privacy(),
     ctaBar(make));
 }
@@ -651,12 +717,13 @@ function who() {
 function openPick(mid) {
   S.me = mid; store.set('yaksok:me:' + S.id, mid);
   S.sel = new Set((S.ev.responses[mid] && S.ev.responses[mid].dates) || []);
+  S.pickSaved = new Set(S.sel); S.pickId = S.id; S.pickMember = mid;
   S.confirmEmpty = false;
   go('pick');
 }
 
 function pick() {
-  const ev = S.ev;
+  const ev = S.ev, eventId = S.id;
   const me = ev.members.find(m => m.id === S.me);
   if (!me) { setTimeout(() => go('who')); return screen(); }
   const tk = todayKey();
@@ -669,20 +736,23 @@ function pick() {
   const countEl = h('strong');
   const cta = h('button', { class: 'btn btn-primary', type: 'button', onclick: save });
   function sync() {
-    countEl.textContent = S.sel.size ? `${S.sel.size}일 골랐어요` : '아직 안 골랐어요';
+    countEl.textContent = (S.sel.size ? `${S.sel.size}일 골랐어요` : '아직 안 골랐어요') + (isPickDirty() ? ' · 저장 전' : '');
     countEl.className = S.sel.size ? 'has' : '';
+    syncPickExitGuard();
     cta.disabled = S.saving;
     if (S.saving) { cta.textContent = '저장 중…'; return; }
-    if (S.sel.size) { cta.className = 'btn btn-primary'; cta.textContent = `다 골랐어요 (${S.sel.size}일)`; }
+    if (S.sel.size) { cta.className = 'btn btn-primary'; cta.textContent = `선택 저장하기 (${S.sel.size}일)`; }
     else { cta.className = 'btn btn-ghost'; cta.textContent = S.confirmEmpty ? '정말 하나도 없어요 (한 번 더 누르면 저장)' : '되는 날이 하나도 없어요'; }
   }
   function toggle(k, el) {
+    if (S.saving) return;
     if (k < todayKey()) { render(true); toast('지난 날짜는 고를 수 없어요.'); return; }
     if (S.sel.has(k)) S.sel.delete(k); else S.sel.add(k);
     el.setAttribute('aria-pressed', String(S.sel.has(k)));
     S.confirmEmpty = false; sync();
   }
   function toggleDow(i) {
+    if (S.saving) return;
     const ks = openKeys().filter(k => parseKey(k).getDay() === i);
     if (!ks.length) return;
     const all = ks.every(k => S.sel.has(k));
@@ -701,21 +771,37 @@ function pick() {
     return true;
   }
   async function save() {
-    if (S.saving) return;
+    if (S.saving || S.id !== eventId || S.me !== me.id || S.view !== 'pick') return;
     if (removeExpiredSelections()) { render(true); return; }
     if (!S.sel.size && !S.confirmEmpty) { S.confirmEmpty = true; sync(); return; }
     S.saving = true; sync();
     try {
       await fb();
+      if (S.id !== eventId || S.me !== me.id || S.view !== 'pick') { S.saving = false; return; }
       if (removeExpiredSelections()) { S.saving = false; render(true); return; }
-      const dates = [...S.sel].filter(k => k >= ev.start && k <= ev.end).sort();
-      await FB.updateDoc(evRef(), new FB.FieldPath('responses', me.id), { dates, at: Date.now() }, 'updatedAt', FB.serverTimestamp());
+      const selected = [...S.sel], ref = evRef(eventId);
+      const dates = await FB.runTransaction(FB.db, async tx => {
+        const snap = await tx.get(ref);
+        if (S.id !== eventId || S.me !== me.id || S.view !== 'pick') throw memberProblem('화면이 바뀌어 저장을 멈췄어요. 현재 약속에서 다시 눌러주세요.');
+        if (!snap.exists() || snap.data().deleted) throw memberProblem('삭제되었거나 찾을 수 없는 약속이에요.');
+        const latest = normalize(snap.data());
+        if (!latest.members.some(m => m.id === me.id)) throw memberProblem('명단에서 빠진 이름이에요. 주최자에게 확인해 주세요.');
+        const saved = new Set((latest.responses[me.id] && latest.responses[me.id].dates) || []);
+        const tk = todayKey();
+        if (selected.some(k => k < tk && !saved.has(k))) throw memberProblem('날짜가 바뀌었어요. 선택을 확인하고 다시 저장해 주세요.');
+        const dates = selected.filter(k => k >= latest.start && k <= latest.end).sort();
+        tx.update(ref, new FB.FieldPath('responses', me.id), { dates, at: Date.now() }, 'updatedAt', FB.serverTimestamp());
+        return dates;
+      });
       S.saving = false;
+      if (S.id !== eventId || S.me !== me.id || S.view !== 'pick') return;
       S.ev.responses[me.id] = { dates, at: Date.now() };
+      S.pickSaved = new Set(dates); S.sel = new Set(dates); syncPickExitGuard();
       go(stats(S.ev).final ? 'result' : 'done');
     } catch (e) {
-      console.error(e); S.saving = false; sync();
-      toast('저장하지 못했어요. 다시 눌러주세요.');
+      S.saving = false;
+      if (S.id !== eventId || S.me !== me.id || S.view !== 'pick') return;
+      sync(); toast(e?.userMessage || '저장하지 못했어요. 선택은 그대로예요. 다시 눌러주세요.');
     }
   }
   sync();
@@ -725,8 +811,8 @@ function pick() {
     h('div', null, h('h1', null, `${me.name}님, 되는 날을`, h('br'), '모두 골라주세요'),
       h('p', { class: 'sub', style: 'margin-top:8px' }, me.req ? '필참으로 지정돼 있어요. 되는 날을 빠짐없이 골라주세요.' : '많이 고를수록 다 같이 되는 날을 찾기 쉬워요.')),
     h('div', { class: 'toolbar' }, countEl, h('div', { class: 'tools' },
-      h('button', { class: 'pill', type: 'button', onclick: () => { openKeys().forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
-      h('button', { class: 'pill', type: 'button', onclick: () => { S.sel.clear(); render(true); } }, '전체 해제'))),
+      h('button', { class: 'pill', type: 'button', onclick: () => { if (S.saving) return; openKeys().forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
+      h('button', { class: 'pill', type: 'button', onclick: () => { if (S.saving) return; S.sel.clear(); render(true); } }, '전체 해제'))),
     h('div', { class: 'months' }, months.map(g => {
       const first = parseKey(g.keys[0]);
       return h('div', { class: 'month' },
@@ -826,23 +912,55 @@ function deleted() {
 const VIEWS = { loading, home, create, created, intro, who, pick, done, result, notfound, error, deleted };
 
 // ===== 주최자 기능 =====
-const fail = e => { console.error(e); toast(e?.userMessage || '처리하지 못했어요. 다시 시도해 주세요.'); };
-async function patch(obj) { await fb(); await FB.updateDoc(evRef(), { ...obj, updatedAt: FB.serverTimestamp() }); }
+const fail = e => {
+  if (e?.code === 'permission-denied' || e?.code === 'firestore/permission-denied') {
+    S.hostAuthError = true; S.hostOpen = true;
+    if (typeof render === 'function') render(true);
+    toast('관리 권한을 확인하지 못했어요. 주최자 메뉴의 관리 권한 복구에서 코드를 확인해 주세요.');
+  } else toast(e?.userMessage || '처리하지 못했어요. 다시 시도해 주세요.');
+};
 const memberProblem = message => Object.assign(new Error(message), { userMessage: message });
-async function mutateMembers(change) {
+function requireHost() {
+  const id = S.id, key = hostKey(id);
+  if (!key || S.hostAuthError) throw memberProblem('주최자 메뉴에서 관리 권한을 복구한 뒤 다시 눌러주세요.');
+  return { id, key };
+}
+function authorizeHost(tx, id, key) {
+  // 열쇠를 공개 약속 문서에 쓰지 않고, 읽을 수 없는 권한 문서에만 증명해요.
+  tx.update(FB.doc(FB.db, 'hostkeys', id), new FB.FieldPath(key), FB.serverTimestamp());
+}
+async function patch(obj) {
+  const { id, key } = requireHost();
   await fb();
-  const ref = evRef();
+  if (S.id !== id) throw memberProblem('현재 약속에서 다시 눌러주세요.');
+  const ref = evRef(id);
+  await FB.runTransaction(FB.db, async tx => {
+    const snap = await tx.get(ref);
+    if (S.id !== id) throw memberProblem('현재 약속에서 다시 눌러주세요.');
+    if (!snap.exists() || snap.data().deleted) throw memberProblem('약속을 찾을 수 없어요. 새로고침해 주세요.');
+    authorizeHost(tx, id, key);
+    tx.update(ref, { ...obj, updatedAt: FB.serverTimestamp() });
+  });
+  return id;
+}
+async function mutateMembers(change) {
+  const { id, key } = requireHost();
+  await fb();
+  if (S.id !== id) throw memberProblem('현재 약속에서 다시 눌러주세요.');
+  const ref = evRef(id);
   return FB.runTransaction(FB.db, async tx => {
     const snap = await tx.get(ref);
+    if (S.id !== id) throw memberProblem('현재 약속에서 다시 눌러주세요.');
     if (!snap.exists() || snap.data().deleted) throw memberProblem('약속을 찾을 수 없어요. 새로고침해 주세요.');
     const updates = change(normalize(snap.data()));
     if (!updates) return false;
+    authorizeHost(tx, id, key);
     tx.update(ref, { ...updates, updatedAt: FB.serverTimestamp() });
     return true;
   });
 }
-async function fixDate(k) { try { await patch({ fixed: k }); if (k) { toast('확정했어요: ' + fmt(k));if (S.view !== 'result' && stats(S.ev).final) go('result'); } } catch (e) { fail(e); } }
-async function closeEvent() { try { await patch({ closed: true }); go('result'); } catch (e) { fail(e); } }
+async function fixDate(k) { try { const id = await patch({ fixed: k }); if (S.id !== id) return; if (k) { toast('확정했어요: ' + fmt(k));if (S.view !== 'result' && S.ev && stats(S.ev).final) go('result'); } } catch (e) { fail(e); } }
+async function closeEvent() { try { const id = await patch({ closed: true }); if (S.id === id) go('result'); } catch (e) { fail(e); } }
 async function reopenEvent(st) {
   const clearDl = !!(st && st.expired);
   try { await patch({ closed: false, fixed: null, ...(clearDl ? { deadline: null } : {}) }); toast(clearDl ? '다시 응답을 받을게요 (지난 마감일은 없앴어요)' : '다시 응답을 받을게요'); } catch (e) { fail(e); }
@@ -862,26 +980,36 @@ async function toggleReq(m) {
   } catch (e) { fail(e); }
 }
 async function deleteEvent(el) {
+  if (S.deleting) return;
   if (el.dataset.armed !== '1') {
     el.dataset.armed = '1'; el.textContent = '정말 삭제할까요? 한 번 더 누르면 지워져요';
     setTimeout(() => { if (el.isConnected) { el.dataset.armed = ''; el.textContent = '약속 삭제'; } }, 4000);
     return;
   }
-  const id = S.id, key = hostKey();
-  if (!key) return toast('삭제 권한이 없어요. 주최자 메뉴에서 복구 코드를 입력해주세요.');
+  const id = S.id, key = hostKey(id);
+  if (!key || S.hostAuthError) return toast('주최자 메뉴에서 관리 권한을 복구한 뒤 다시 눌러주세요.');
   try {
     S.deleting = true; if (S.unsub) S.unsub(); S.unsub = null;
     // 내용을 비우고 '삭제됨' 표시만 남겨요. 서버 규칙이 삭제 열쇠를 확인해요.
-    await fb(); await FB.setDoc(evRef(), { deleted: true, delKey: key, deletedAt: FB.serverTimestamp() });
+    await fb();
+    if (S.id !== id) throw memberProblem('현재 약속에서 다시 눌러주세요.');
+    const ref = evRef(id);
+    await FB.runTransaction(FB.db, async tx => {
+      const snap = await tx.get(ref);
+      if (S.id !== id) throw memberProblem('현재 약속에서 다시 눌러주세요.');
+      if (!snap.exists() || snap.data().deleted) throw memberProblem('이미 삭제되었거나 찾을 수 없는 약속이에요.');
+      tx.set(ref, { deleted: true, delKey: key, deletedAt: FB.serverTimestamp() });
+    });
     dropHosted(id); store.set('yaksok:me:' + id, null);
+    if (S.id !== id) { S.deleting = false; return; }
     history.replaceState(null, '', location.pathname);
     S.id = null; S.ev = null; S.me = null; S.deleting = false; S.wasFinal = null;
     go('home'); toast('약속을 삭제했어요');
   } catch (e) {
     S.deleting = false;
+    if (S.id !== id) return;
     if (e?.code === 'permission-denied' || e?.code === 'firestore/permission-denied') {
-      S.hostOpen = true; watch();
-      toast('삭제 권한을 확인하지 못했어요. 주최자 메뉴의 삭제 권한 복구에서 코드를 확인해주세요.');
+      S.hostOpen = true; watch(); fail(e);
     } else { watch(); fail(e); }
   }
 }
