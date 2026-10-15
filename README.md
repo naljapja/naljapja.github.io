@@ -2,7 +2,7 @@
 
 링크 하나로 다 같이 되는 날을 찾는 약속 잡기 페이지예요.
 
-**주소:** https://enozi1201.github.io/naljapja/
+**주소:** https://naljapja.github.io/
 
 ## 쓰는 법
 1. **약속 만들기**: 약속 이름, 날짜 범위, 참여자 명단을 넣어요.
