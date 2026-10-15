@@ -363,6 +363,7 @@ const ctaBar = (...k) => h('div', { class: 'cta-bar' }, ...k);
 const btn = (label, onclick, cls = 'btn-primary') => h('button', { class: 'btn ' + cls, type: 'button', onclick }, label);
 const screen = (...k) => h('section', { class: 'screen' }, ...k);
 const step = (n, t, d) => h('li', null, h('span', { class: 'num' }, n), h('div', null, h('strong', null, t), h('p', null, d)));
+const privacy = () => h('p', { class: 'footer' }, '입력한 이름과 날짜는 약속 날짜를 정하는 데만 써요.');
 
 function progressCard(st) {
   const pct = st.total ? Math.round(st.n / st.total * 100) : 0;
@@ -422,6 +423,7 @@ function home() {
       step('3', '짝짝짝', '모두 고르면 다 같이 되는 날이 바로 떠요')),
     mine.length ? h('div', { class: 'list' }, h('h2', { class: 'h-sm' }, '내가 만든 약속'),
       mine.map(x => h('a', { class: 'card ev-row', href: '?id=' + x.id }, h('div', null, h('strong', null, x.title), h('span', { class: 'meta' }, `${fmtShort(x.start)} ~ ${fmtShort(x.end)}`)), h('span', { class: 'chev' }, '›')))) : null,
+    privacy(),
     ctaBar(btn('새 약속 만들기', () => { resetDraft(); go('create'); })));
 }
 
@@ -488,6 +490,7 @@ function create() {
         chips,
         h('p', { class: 'note' }, '내 이름도 꼭 넣어주세요. 명단에 있는 사람이 다 고르면 결과가 떠요.'))),
     err,
+    privacy(),
     ctaBar(make));
 }
 
@@ -520,6 +523,7 @@ function intro() {
       step('2', '되는 날 콕콕', '되는 날을 전부 골라요. 나중에 수정도 돼요'),
       step('3', '짝짝짝', '모두 고르면 다 같이 되는 날이 떠요')),
     isHost() ? hostPanel(st) : null,
+    privacy(),
     ctaBar(
       btn(me && myResp() ? '내 선택 수정하기' : '시작하기', () => me ? openPick(me.id) : go('who')),
       me ? h('button', { class: 'btn btn-text', type: 'button', onclick: () => { S.me = null; store.set('yaksok:me:' + S.id, null); go('who'); } }, `${me.name}님이 아니신가요?`) : null));
