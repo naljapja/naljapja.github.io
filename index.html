@@ -292,6 +292,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const hosted = () => store.get('yaksok:hosted', []);
+// 화면에 보이는 개수와 별개로, 예전 약속을 관리하는 데 필요한 열쇠는 보관해요.
+const rememberHosted = ev => store.set('yaksok:hosted', [...hosted().filter(x => x.id !== ev.id), ev]);
 const isHost = () => hosted().some(x => x.id === S.id);
 // 삭제 열쇠: 약속을 만든 기기에만 저장돼요. 이 열쇠가 있어야 서버가 삭제를 허락해요.
 const hostKey = () => (hosted().find(x => x.id === S.id) || {}).key || null;
@@ -533,7 +535,7 @@ function create() {
       batch.set(FB.doc(FB.db, 'events', id), { ...data, createdAt: FB.serverTimestamp(), updatedAt: FB.serverTimestamp() });
       batch.set(FB.doc(FB.db, 'hostkeys', id), { key });
       await batch.commit();
-      store.set('yaksok:hosted', [...hosted().filter(x => x.id !== id), { id, title: data.title, start: data.start, end: data.end, key }].slice(-30));
+      rememberHosted({ id, title: data.title, start: data.start, end: data.end, key });
       history.replaceState(null, '', '?id=' + id);
       S.id = id; S.me = null; S.ev = normalize(data); S.wasFinal = false; S.draft = null;
       go('created');
@@ -625,7 +627,7 @@ function pick() {
   if (!me) { setTimeout(() => go('who')); return screen(); }
   const tk = todayKey();
   const keys = rangeKeys(ev.start, ev.end);
-  const open = keys.filter(k => k >= tk);
+  const openKeys = () => keys.filter(k => k >= todayKey());
   const others = new Map();
   for (const m of ev.members) if (m.id !== me.id && ev.responses[m.id]) for (const k of ev.responses[m.id].dates || []) others.set(k, (others.get(k) || 0) + 1);
   const months = [];
@@ -641,23 +643,37 @@ function pick() {
     else { cta.className = 'btn btn-ghost'; cta.textContent = S.confirmEmpty ? '정말 하나도 없어요 (한 번 더 누르면 저장)' : '되는 날이 하나도 없어요'; }
   }
   function toggle(k, el) {
+    if (k < todayKey()) { render(true); toast('지난 날짜는 고를 수 없어요.'); return; }
     if (S.sel.has(k)) S.sel.delete(k); else S.sel.add(k);
     el.setAttribute('aria-pressed', String(S.sel.has(k)));
     S.confirmEmpty = false; sync();
   }
   function toggleDow(i) {
-    const ks = open.filter(k => parseKey(k).getDay() === i);
+    const ks = openKeys().filter(k => parseKey(k).getDay() === i);
     if (!ks.length) return;
     const all = ks.every(k => S.sel.has(k));
     ks.forEach(k => all ? S.sel.delete(k) : S.sel.add(k));
     S.confirmEmpty = false; render(true);
     toast(`${DOW[i]}요일 ${ks.length}일을 ${all ? '뺐어요' : '골랐어요'}`);
   }
+  function removeExpiredSelections() {
+    // 이미 저장한 과거 응답은 유지하고, 화면을 열어둔 사이 지난 미저장 날짜만 빼요.
+    const saved = new Set((ev.responses[me.id] && ev.responses[me.id].dates) || []);
+    const tk = todayKey(), expired = [...S.sel].filter(k => k < tk && !saved.has(k));
+    if (!expired.length) return false;
+    expired.forEach(k => S.sel.delete(k));
+    S.confirmEmpty = false;
+    toast('날짜가 바뀌어 지난 날짜는 뺐어요. 선택을 확인하고 다시 저장해주세요.');
+    return true;
+  }
   async function save() {
+    if (S.saving) return;
+    if (removeExpiredSelections()) { render(true); return; }
     if (!S.sel.size && !S.confirmEmpty) { S.confirmEmpty = true; sync(); return; }
     S.saving = true; sync();
     try {
       await fb();
+      if (removeExpiredSelections()) { S.saving = false; render(true); return; }
       const dates = [...S.sel].filter(k => k >= ev.start && k <= ev.end).sort();
       await FB.updateDoc(evRef(), new FB.FieldPath('responses', me.id), { dates, at: Date.now() }, 'updatedAt', FB.serverTimestamp());
       S.saving = false;
@@ -675,7 +691,7 @@ function pick() {
     h('div', null, h('h1', null, `${me.name}님, 되는 날을`, h('br'), '모두 골라주세요'),
       h('p', { class: 'sub', style: 'margin-top:8px' }, me.req ? '필참으로 지정돼 있어요. 되는 날을 빠짐없이 골라주세요.' : '많이 고를수록 다 같이 되는 날을 찾기 쉬워요.')),
     h('div', { class: 'toolbar' }, countEl, h('div', { class: 'tools' },
-      h('button', { class: 'pill', type: 'button', onclick: () => { open.forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
+      h('button', { class: 'pill', type: 'button', onclick: () => { openKeys().forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
       h('button', { class: 'pill', type: 'button', onclick: () => { S.sel.clear(); render(true); } }, '전체 해제'))),
     h('div', { class: 'months' }, months.map(g => {
       const first = parseKey(g.keys[0]);
@@ -723,11 +739,14 @@ function result() {
   const why = st.allDone ? `${st.total}명 모두 참여했어요` : (st.expired && !ev.closed ? '응답 마감일이 지났어요' : '응답 마감') + ` · ${st.total}명 중 ${st.n}명 참여`;
   const parts = [];
   if (head) {
-    const row = st.rows.find(r => r.k === head);
-    const no = row ? row.no.map(m => m.name) : st.doneMembers.map(m => m.name);
+    const row = st.rows.find(r => r.k === head) || {
+      no: st.doneMembers.filter(m => !has(ev, m, head)),
+      reqNo: st.req.filter(m => ev.responses[m.id] && !has(ev, m, head)),
+    };
+    const no = row.no.map(m => m.name);
     let msg = '이날 만나요!', sub = null;
     if (!no.length) msg = st.waiting.length ? `응답한 ${st.n}명은 모두 이날 돼요!` : '이날 다 같이 볼 수 있어요!';
-    else sub = `${no.join(', ')} 빼고` + (st.req.length && row && !row.reqNo.length ? ' · 필참 인원은 모두 돼요' : '');
+    else sub = `${no.join(', ')} 빼고` + (st.req.length && !row.reqNo.length ? ' · 필참 인원은 모두 돼요' : '');
     parts.push(h('div', { class: 'celebrate' },
       h('div', { class: 'clap', 'aria-hidden': 'true' }, '👏'),
       h('div', { class: 'jjak' }, '짝짝짝!'),
@@ -773,8 +792,21 @@ function deleted() {
 const VIEWS = { loading, home, create, created, intro, who, pick, done, result, notfound, error, deleted };
 
 // ===== 주최자 기능 =====
-const fail = e => { console.error(e); toast('처리하지 못했어요. 다시 시도해 주세요.'); };
+const fail = e => { console.error(e); toast(e?.userMessage || '처리하지 못했어요. 다시 시도해 주세요.'); };
 async function patch(obj) { await fb(); await FB.updateDoc(evRef(), { ...obj, updatedAt: FB.serverTimestamp() }); }
+const memberProblem = message => Object.assign(new Error(message), { userMessage: message });
+async function mutateMembers(change) {
+  await fb();
+  const ref = evRef();
+  return FB.runTransaction(FB.db, async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists() || snap.data().deleted) throw memberProblem('약속을 찾을 수 없어요. 새로고침해 주세요.');
+    const updates = change(normalize(snap.data()));
+    if (!updates) return false;
+    tx.update(ref, { ...updates, updatedAt: FB.serverTimestamp() });
+    return true;
+  });
+}
 async function fixDate(k) { try { await patch({ fixed: k }); if (k) { toast('확정했어요: ' + fmt(k));if (S.view !== 'result' && stats(S.ev).final) go('result'); } } catch (e) { fail(e); } }
 async function closeEvent() { try { await patch({ closed: true }); go('result'); } catch (e) { fail(e); } }
 async function reopenEvent(st) {
@@ -787,7 +819,13 @@ async function setDeadline(k) {
   try { await patch({ deadline: k }); toast(k ? '응답 마감일: ' + fmt(k) : '응답 마감일을 없앴어요'); } catch (e) { fail(e); }
 }
 async function toggleReq(m) {
-  try { await patch({ members: S.ev.members.map(x => x.id !== m.id ? x : (x.req ? { id: x.id, name: x.name } : { id: x.id, name: x.name, req: true })) }); } catch (e) { fail(e); }
+  const required = !m.req;
+  try {
+    await mutateMembers(ev => {
+      if (!ev.members.some(x => x.id === m.id)) throw memberProblem('이미 명단에서 빠진 사람이에요.');
+      return { members: ev.members.map(x => x.id !== m.id ? x : (required ? { ...x, req: true } : { id: x.id, name: x.name })) };
+    });
+  } catch (e) { fail(e); }
 }
 async function deleteEvent(el) {
   if (el.dataset.armed !== '1') {
@@ -814,14 +852,26 @@ function nudge(st) {
 async function addMember(input) {
   const n = input.value.trim().slice(0, 12);
   if (!n) return;
-  if (S.ev.members.some(m => m.name === n)) return toast('이미 있는 이름이에요');
-  if (S.ev.members.length >= 30) return toast('참여자는 30명까지예요');
-  try { await patch({ members: [...S.ev.members, { id: 'm' + rid(6), name: n }] }); input.value = ''; toast(n + '님을 추가했어요'); } catch (e) { fail(e); }
+  const member = { id: 'm' + rid(6), name: n };
+  try {
+    await mutateMembers(ev => {
+      if (ev.members.some(m => m.name === n)) throw memberProblem('이미 있는 이름이에요');
+      if (ev.members.length >= 30) throw memberProblem('참여자는 30명까지예요');
+      return { members: [...ev.members, member] };
+    });
+    input.value = ''; toast(n + '님을 추가했어요');
+  } catch (e) { fail(e); }
 }
 async function removeMember(m, el) {
   if (el.dataset.armed !== '1') { el.dataset.armed = '1'; el.textContent = '정말 뺄까요?'; setTimeout(() => { if (el.isConnected) { el.dataset.armed = ''; el.textContent = '빼기'; } }, 3000); return; }
-  if (S.ev.members.length <= 2) return toast('참여자는 2명 이상이어야 해요');
-  try { await patch({ members: S.ev.members.filter(x => x.id !== m.id), ['responses.' + m.id]: FB.deleteField() }); toast(m.name + '님을 뺐어요'); } catch (e) { fail(e); }
+  try {
+    const removed = await mutateMembers(ev => {
+      if (!ev.members.some(x => x.id === m.id)) return null;
+      if (ev.members.length <= 2) throw memberProblem('참여자는 2명 이상이어야 해요');
+      return { members: ev.members.filter(x => x.id !== m.id), ['responses.' + m.id]: FB.deleteField() };
+    });
+    toast(removed ? m.name + '님을 뺐어요' : '이미 명단에서 빠진 사람이에요.');
+  } catch (e) { fail(e); }
 }
 
 // ===== 공유·복사·토스트 =====
@@ -882,10 +932,13 @@ function confetti() {
 }
 
 // ===== 시작 =====
-// 마감일이 지나는 순간(자정)에도 화면이 결과로 넘어가도록 1분마다 확인
+// 자정 이후 마감 상태와 고를 수 있는 날짜가 함께 갱신되도록 1분마다 확인
+let lastToday = todayKey();
 setInterval(() => {
+  const tk = todayKey(), dayChanged = tk !== lastToday;
+  lastToday = tk;
   if (!S.ev || ['loading', 'created', 'create', 'home', 'notfound', 'error'].includes(S.view)) return;
-  if (stats(S.ev).final !== S.wasFinal) onData();
+  if (dayChanged || stats(S.ev).final !== S.wasFinal) onData();
 }, 60000);
 (function boot() {
   const id = new URLSearchParams(location.search).get('id');
