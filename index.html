@@ -318,9 +318,11 @@ async function watch() {
     S.unsub?.();
     S.unsub = FB.onSnapshot(evRef(), snap => {
       if (S.deleting) return;
-      if (!snap.exists()) { S.ev = null; dropHosted(S.id); if (S.view !== 'created') go('notfound'); return; }
+      // 서버가 아직 확인하지 않은 '없어짐/삭제됨'은 무시 (거절되면 원래대로 돌아와요)
+      const pending = snap.metadata && snap.metadata.hasPendingWrites;
+      if (!snap.exists()) { if (pending) return; S.ev = null; if (S.view !== 'created') go('notfound'); return; }
       const d = snap.data();
-      if (d.deleted) { S.ev = null; dropHosted(S.id); go('deleted'); return; }
+      if (d.deleted) { if (pending) return; S.ev = null; dropHosted(S.id); go('deleted'); return; }
       S.ev = normalize(d);
       onData();
     }, err => { console.error(err); go('error'); });
@@ -385,7 +387,7 @@ document.addEventListener('focusout', () => { if (deferred) { deferred = false; 
 function onData() {
   const st = stats(S.ev);
   if (S.me && !S.ev.members.some(m => m.id === S.me)) S.me = null;
-  if (S.view === 'loading' || S.view === 'error') S.view = st.final ? 'result' : 'intro';
+  if (['loading', 'error', 'notfound', 'deleted'].includes(S.view)) S.view = st.final ? 'result' : 'intro';
   else if (st.final && S.wasFinal === false && ['intro', 'who', 'done'].includes(S.view)) S.view = 'result';
   else if (!st.final && S.view === 'result') S.view = myResp() ? 'done' : 'intro';
   S.wasFinal = st.final;
