@@ -289,12 +289,25 @@ function h(tag, props, ...kids) {
 }
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
 };
 const hosted = () => store.get('yaksok:hosted', []);
+// 화면에 보이는 개수와 별개로, 예전 약속을 관리하는 데 필요한 열쇠는 보관해요.
+const rememberHosted = ev => store.set('yaksok:hosted', [...hosted().filter(x => x.id !== ev.id), ev]);
 const isHost = () => hosted().some(x => x.id === S.id);
-// 삭제 열쇠: 약속을 만든 기기에만 저장돼요. 이 열쇠가 있어야 서버가 삭제를 허락해요.
+// 삭제 열쇠: 약속을 만든 브라우저에만 저장돼요. 이 열쇠가 있어야 서버가 삭제를 허락해요.
 const hostKey = () => (hosted().find(x => x.id === S.id) || {}).key || null;
+function restoreHostKey(id, rawKey) {
+  const problem = message => Object.assign(new Error(message), { userMessage: message });
+  if (typeof id !== 'string' || id !== S.id || !/^[a-z0-9]{10,24}$/.test(id)) throw problem('현재 보고 있는 약속에서 복구해 주세요.');
+  const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+  if (!/^[A-Za-z0-9_-]{20,128}$/.test(key)) throw problem('복구 코드를 확인해 주세요. 영문·숫자·밑줄·하이픈 20~128자여야 해요.');
+  const entries = hosted();
+  if (!Array.isArray(entries) || !entries.some(entry => entry && typeof entry === 'object' && entry.id === id)) throw problem('이 브라우저에 이 약속의 주최자 기록이 없어요. 약속을 만든 브라우저에서 열어주세요.');
+  const updated = entries.map(entry => entry && entry.id === id ? { ...entry, key } : entry);
+  if (!store.set('yaksok:hosted', updated)) throw problem('복구 코드를 저장하지 못했어요. 브라우저 저장 공간을 확인하고 다시 눌러주세요.');
+  return true;
+}
 
 // ===== 상태 =====
 const S = { view: 'loading', id: null, ev: null, unsub: null, me: null, sel: new Set(), confirmEmpty: false, saving: false, wasFinal: null, celebrated: '', hostOpen: false, draft: null, rankAll: false, deleting: false };
@@ -432,6 +445,27 @@ function dateTable(st) {
   return h('ul', { class: 'table' }, rows.map(k => h('li', null, h('b', null, fmtShort(k)), h('i', null, st.counts.get(k) + '명'),
     h('span', null, st.doneMembers.filter(m => (S.ev.responses[m.id].dates || []).includes(k)).map(m => m.name).join(', ')))));
 }
+function hostKeyRecovery(keyed) {
+  const id = S.id;
+  const err = h('p', { class: 'err', role: 'alert' });
+  const input = h('input', { class: 'input', type: 'password', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', maxlength: '128', placeholder: '관리자에게 받은 복구 코드' });
+  const form = h('form', { class: 'host-sec', onsubmit: e => {
+    e.preventDefault();
+    try {
+      restoreHostKey(id, input.value);
+      input.value = ''; input.blur(); S.hostOpen = true; render(true);
+      toast('복구 코드를 이 브라우저에 저장했어요');
+    } catch (error) { err.textContent = error.userMessage || '복구 코드를 저장하지 못했어요. 다시 눌러주세요.'; }
+  } },
+    h('p', { class: 'note' }, '약속 링크만으로는 삭제 권한을 복구할 수 없어요. 관리자에게 받은 코드를 저장해 주세요. 코드는 삭제할 때 서버에서 확인해요.'),
+    h('label', { class: 'field' }, h('span', { class: 'label' }, '복구 코드'), input),
+    err,
+    h('button', { class: 'btn btn-ghost btn-sm', type: 'submit', style: 'align-self:flex-start' }, '이 브라우저에 코드 저장'));
+  return h('div', { class: 'host-sec' },
+    !keyed ? h('p', { class: 'note' }, '이 브라우저에 이 약속의 삭제 권한이 없어요.') : null,
+    h('details', { class: 'card', open: !keyed, style: 'box-shadow:none' },
+      h('summary', null, '삭제 권한 복구'), h('div', { class: 'host-body' }, form)));
+}
 function hostPanel(st) {
   const ev = S.ev;
   const input = h('input', { class: 'input', placeholder: '추가할 이름', maxlength: '12', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMember(input); } } });
@@ -459,7 +493,8 @@ function hostPanel(st) {
         h('div', { class: 'row' }, input, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => addMember(input) }, '추가'))),
       hostKey() ? h('div', { class: 'host-sec' },
         h('button', { class: 'btn btn-danger btn-sm', type: 'button', style: 'align-self:flex-start', onclick: e => deleteEvent(e.currentTarget) }, '약속 삭제'),
-        h('p', { class: 'note' }, '지우면 참여자들도 더 이상 볼 수 없고, 입력한 이름과 날짜도 같이 지워져요.')) : null));
+        h('p', { class: 'note' }, '지우면 참여자들도 더 이상 볼 수 없고, 입력한 이름과 날짜도 같이 지워져요.')) : null,
+      hostKeyRecovery(!!hostKey())));
 }
 
 // ===== 화면들 =====
@@ -533,7 +568,7 @@ function create() {
       batch.set(FB.doc(FB.db, 'events', id), { ...data, createdAt: FB.serverTimestamp(), updatedAt: FB.serverTimestamp() });
       batch.set(FB.doc(FB.db, 'hostkeys', id), { key });
       await batch.commit();
-      store.set('yaksok:hosted', [...hosted().filter(x => x.id !== id), { id, title: data.title, start: data.start, end: data.end, key }].slice(-30));
+      rememberHosted({ id, title: data.title, start: data.start, end: data.end, key });
       history.replaceState(null, '', '?id=' + id);
       S.id = id; S.me = null; S.ev = normalize(data); S.wasFinal = false; S.draft = null;
       go('created');
@@ -577,8 +612,9 @@ function created() {
       h('div', { class: 'meta' }, `참여자 ${ev.members.length}명 · ${ev.members.map(m => (m.req ? '★' : '') + m.name).join(', ')}`),
       ev.deadline ? h('div', { class: 'meta' }, `응답 마감 ${fmt(ev.deadline)} · ${dday(ev)}`) : null,
       h('div', { class: 'linkbox' }, h('span', { class: 'url' }, url), h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => copy(url, '링크를 복사했어요') }, '복사'))),
-    h('p', { class: 'note', style: 'text-align:center' }, '이 기기에서는 주최자 메뉴(마감·확정·명단 수정·삭제)를 쓸 수 있어요.'),
-    ctaBar(btn('링크 공유하기', share), btn('나도 날짜 고르기', () => go('who'), 'btn-ghost')));
+    h('p', { class: 'note', style: 'text-align:center' }, '약속을 만든 이 브라우저에서 주최자 메뉴(마감·확정·명단 수정·삭제)를 쓸 수 있어요.'),
+    ctaBar(btn('링크 공유하기', share), btn('나도 날짜 고르기', () => go('who'), 'btn-ghost'),
+      btn('주최자 메뉴 열기', () => { S.hostOpen = true; go('intro'); }, 'btn-text')));
 }
 
 function intro() {
@@ -625,7 +661,7 @@ function pick() {
   if (!me) { setTimeout(() => go('who')); return screen(); }
   const tk = todayKey();
   const keys = rangeKeys(ev.start, ev.end);
-  const open = keys.filter(k => k >= tk);
+  const openKeys = () => keys.filter(k => k >= todayKey());
   const others = new Map();
   for (const m of ev.members) if (m.id !== me.id && ev.responses[m.id]) for (const k of ev.responses[m.id].dates || []) others.set(k, (others.get(k) || 0) + 1);
   const months = [];
@@ -641,23 +677,37 @@ function pick() {
     else { cta.className = 'btn btn-ghost'; cta.textContent = S.confirmEmpty ? '정말 하나도 없어요 (한 번 더 누르면 저장)' : '되는 날이 하나도 없어요'; }
   }
   function toggle(k, el) {
+    if (k < todayKey()) { render(true); toast('지난 날짜는 고를 수 없어요.'); return; }
     if (S.sel.has(k)) S.sel.delete(k); else S.sel.add(k);
     el.setAttribute('aria-pressed', String(S.sel.has(k)));
     S.confirmEmpty = false; sync();
   }
   function toggleDow(i) {
-    const ks = open.filter(k => parseKey(k).getDay() === i);
+    const ks = openKeys().filter(k => parseKey(k).getDay() === i);
     if (!ks.length) return;
     const all = ks.every(k => S.sel.has(k));
     ks.forEach(k => all ? S.sel.delete(k) : S.sel.add(k));
     S.confirmEmpty = false; render(true);
     toast(`${DOW[i]}요일 ${ks.length}일을 ${all ? '뺐어요' : '골랐어요'}`);
   }
+  function removeExpiredSelections() {
+    // 이미 저장한 과거 응답은 유지하고, 화면을 열어둔 사이 지난 미저장 날짜만 빼요.
+    const saved = new Set((ev.responses[me.id] && ev.responses[me.id].dates) || []);
+    const tk = todayKey(), expired = [...S.sel].filter(k => k < tk && !saved.has(k));
+    if (!expired.length) return false;
+    expired.forEach(k => S.sel.delete(k));
+    S.confirmEmpty = false;
+    toast('날짜가 바뀌어 지난 날짜는 뺐어요. 선택을 확인하고 다시 저장해주세요.');
+    return true;
+  }
   async function save() {
+    if (S.saving) return;
+    if (removeExpiredSelections()) { render(true); return; }
     if (!S.sel.size && !S.confirmEmpty) { S.confirmEmpty = true; sync(); return; }
     S.saving = true; sync();
     try {
       await fb();
+      if (removeExpiredSelections()) { S.saving = false; render(true); return; }
       const dates = [...S.sel].filter(k => k >= ev.start && k <= ev.end).sort();
       await FB.updateDoc(evRef(), new FB.FieldPath('responses', me.id), { dates, at: Date.now() }, 'updatedAt', FB.serverTimestamp());
       S.saving = false;
@@ -675,7 +725,7 @@ function pick() {
     h('div', null, h('h1', null, `${me.name}님, 되는 날을`, h('br'), '모두 골라주세요'),
       h('p', { class: 'sub', style: 'margin-top:8px' }, me.req ? '필참으로 지정돼 있어요. 되는 날을 빠짐없이 골라주세요.' : '많이 고를수록 다 같이 되는 날을 찾기 쉬워요.')),
     h('div', { class: 'toolbar' }, countEl, h('div', { class: 'tools' },
-      h('button', { class: 'pill', type: 'button', onclick: () => { open.forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
+      h('button', { class: 'pill', type: 'button', onclick: () => { openKeys().forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
       h('button', { class: 'pill', type: 'button', onclick: () => { S.sel.clear(); render(true); } }, '전체 해제'))),
     h('div', { class: 'months' }, months.map(g => {
       const first = parseKey(g.keys[0]);
@@ -723,11 +773,14 @@ function result() {
   const why = st.allDone ? `${st.total}명 모두 참여했어요` : (st.expired && !ev.closed ? '응답 마감일이 지났어요' : '응답 마감') + ` · ${st.total}명 중 ${st.n}명 참여`;
   const parts = [];
   if (head) {
-    const row = st.rows.find(r => r.k === head);
-    const no = row ? row.no.map(m => m.name) : st.doneMembers.map(m => m.name);
+    const row = st.rows.find(r => r.k === head) || {
+      no: st.doneMembers.filter(m => !has(ev, m, head)),
+      reqNo: st.req.filter(m => ev.responses[m.id] && !has(ev, m, head)),
+    };
+    const no = row.no.map(m => m.name);
     let msg = '이날 만나요!', sub = null;
     if (!no.length) msg = st.waiting.length ? `응답한 ${st.n}명은 모두 이날 돼요!` : '이날 다 같이 볼 수 있어요!';
-    else sub = `${no.join(', ')} 빼고` + (st.req.length && row && !row.reqNo.length ? ' · 필참 인원은 모두 돼요' : '');
+    else sub = `${no.join(', ')} 빼고` + (st.req.length && !row.reqNo.length ? ' · 필참 인원은 모두 돼요' : '');
     parts.push(h('div', { class: 'celebrate' },
       h('div', { class: 'clap', 'aria-hidden': 'true' }, '👏'),
       h('div', { class: 'jjak' }, '짝짝짝!'),
@@ -773,8 +826,21 @@ function deleted() {
 const VIEWS = { loading, home, create, created, intro, who, pick, done, result, notfound, error, deleted };
 
 // ===== 주최자 기능 =====
-const fail = e => { console.error(e); toast('처리하지 못했어요. 다시 시도해 주세요.'); };
+const fail = e => { console.error(e); toast(e?.userMessage || '처리하지 못했어요. 다시 시도해 주세요.'); };
 async function patch(obj) { await fb(); await FB.updateDoc(evRef(), { ...obj, updatedAt: FB.serverTimestamp() }); }
+const memberProblem = message => Object.assign(new Error(message), { userMessage: message });
+async function mutateMembers(change) {
+  await fb();
+  const ref = evRef();
+  return FB.runTransaction(FB.db, async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists() || snap.data().deleted) throw memberProblem('약속을 찾을 수 없어요. 새로고침해 주세요.');
+    const updates = change(normalize(snap.data()));
+    if (!updates) return false;
+    tx.update(ref, { ...updates, updatedAt: FB.serverTimestamp() });
+    return true;
+  });
+}
 async function fixDate(k) { try { await patch({ fixed: k }); if (k) { toast('확정했어요: ' + fmt(k));if (S.view !== 'result' && stats(S.ev).final) go('result'); } } catch (e) { fail(e); } }
 async function closeEvent() { try { await patch({ closed: true }); go('result'); } catch (e) { fail(e); } }
 async function reopenEvent(st) {
@@ -787,7 +853,13 @@ async function setDeadline(k) {
   try { await patch({ deadline: k }); toast(k ? '응답 마감일: ' + fmt(k) : '응답 마감일을 없앴어요'); } catch (e) { fail(e); }
 }
 async function toggleReq(m) {
-  try { await patch({ members: S.ev.members.map(x => x.id !== m.id ? x : (x.req ? { id: x.id, name: x.name } : { id: x.id, name: x.name, req: true })) }); } catch (e) { fail(e); }
+  const required = !m.req;
+  try {
+    await mutateMembers(ev => {
+      if (!ev.members.some(x => x.id === m.id)) throw memberProblem('이미 명단에서 빠진 사람이에요.');
+      return { members: ev.members.map(x => x.id !== m.id ? x : (required ? { ...x, req: true } : { id: x.id, name: x.name })) };
+    });
+  } catch (e) { fail(e); }
 }
 async function deleteEvent(el) {
   if (el.dataset.armed !== '1') {
@@ -796,7 +868,7 @@ async function deleteEvent(el) {
     return;
   }
   const id = S.id, key = hostKey();
-  if (!key) return toast('이 약속은 만든 기기에서만 지울 수 있어요');
+  if (!key) return toast('삭제 권한이 없어요. 주최자 메뉴에서 복구 코드를 입력해주세요.');
   try {
     S.deleting = true; if (S.unsub) S.unsub(); S.unsub = null;
     // 내용을 비우고 '삭제됨' 표시만 남겨요. 서버 규칙이 삭제 열쇠를 확인해요.
@@ -805,7 +877,13 @@ async function deleteEvent(el) {
     history.replaceState(null, '', location.pathname);
     S.id = null; S.ev = null; S.me = null; S.deleting = false; S.wasFinal = null;
     go('home'); toast('약속을 삭제했어요');
-  } catch (e) { S.deleting = false; watch(); fail(e); }
+  } catch (e) {
+    S.deleting = false;
+    if (e?.code === 'permission-denied' || e?.code === 'firestore/permission-denied') {
+      S.hostOpen = true; watch();
+      toast('삭제 권한을 확인하지 못했어요. 주최자 메뉴의 삭제 권한 복구에서 코드를 확인해주세요.');
+    } else { watch(); fail(e); }
+  }
 }
 function nudge(st) {
   const ev = S.ev, tail = ev.deadline && !st.expired ? ` (마감 ${fmtShort(ev.deadline)}, ${dday(ev)})` : '';
@@ -814,14 +892,26 @@ function nudge(st) {
 async function addMember(input) {
   const n = input.value.trim().slice(0, 12);
   if (!n) return;
-  if (S.ev.members.some(m => m.name === n)) return toast('이미 있는 이름이에요');
-  if (S.ev.members.length >= 30) return toast('참여자는 30명까지예요');
-  try { await patch({ members: [...S.ev.members, { id: 'm' + rid(6), name: n }] }); input.value = ''; toast(n + '님을 추가했어요'); } catch (e) { fail(e); }
+  const member = { id: 'm' + rid(6), name: n };
+  try {
+    await mutateMembers(ev => {
+      if (ev.members.some(m => m.name === n)) throw memberProblem('이미 있는 이름이에요');
+      if (ev.members.length >= 30) throw memberProblem('참여자는 30명까지예요');
+      return { members: [...ev.members, member] };
+    });
+    input.value = ''; toast(n + '님을 추가했어요');
+  } catch (e) { fail(e); }
 }
 async function removeMember(m, el) {
   if (el.dataset.armed !== '1') { el.dataset.armed = '1'; el.textContent = '정말 뺄까요?'; setTimeout(() => { if (el.isConnected) { el.dataset.armed = ''; el.textContent = '빼기'; } }, 3000); return; }
-  if (S.ev.members.length <= 2) return toast('참여자는 2명 이상이어야 해요');
-  try { await patch({ members: S.ev.members.filter(x => x.id !== m.id), ['responses.' + m.id]: FB.deleteField() }); toast(m.name + '님을 뺐어요'); } catch (e) { fail(e); }
+  try {
+    const removed = await mutateMembers(ev => {
+      if (!ev.members.some(x => x.id === m.id)) return null;
+      if (ev.members.length <= 2) throw memberProblem('참여자는 2명 이상이어야 해요');
+      return { members: ev.members.filter(x => x.id !== m.id), ['responses.' + m.id]: FB.deleteField() };
+    });
+    toast(removed ? m.name + '님을 뺐어요' : '이미 명단에서 빠진 사람이에요.');
+  } catch (e) { fail(e); }
 }
 
 // ===== 공유·복사·토스트 =====
@@ -882,10 +972,13 @@ function confetti() {
 }
 
 // ===== 시작 =====
-// 마감일이 지나는 순간(자정)에도 화면이 결과로 넘어가도록 1분마다 확인
+// 자정 이후 마감 상태와 고를 수 있는 날짜가 함께 갱신되도록 1분마다 확인
+let lastToday = todayKey();
 setInterval(() => {
+  const tk = todayKey(), dayChanged = tk !== lastToday;
+  lastToday = tk;
   if (!S.ev || ['loading', 'created', 'create', 'home', 'notfound', 'error'].includes(S.view)) return;
-  if (stats(S.ev).final !== S.wasFinal) onData();
+  if (dayChanged || stats(S.ev).final !== S.wasFinal) onData();
 }, 60000);
 (function boot() {
   const id = new URLSearchParams(location.search).get('id');
