@@ -1,0 +1,130 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function eventPath(id) {
+      return /databases/$(database)/documents/events/$(id);
+    }
+    function hostPath(id) {
+      return /databases/$(database)/documents/hostkeys/$(id);
+    }
+    function active(d) {
+      return d.get('deleted', false) != true;
+    }
+    function validKey(key) {
+      return key is string && key.matches('^[A-Za-z0-9_-]{20,128}$');
+    }
+    function isDate(s) {
+      return s is string && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+    // Keep the existing array-of-members data format; no migration is needed.
+    function memberIds(d) {
+      let m = d.members;
+      let n = m.size();
+      return [m[0].id, m[1].id, n > 2 ? m[2].id : '', n > 3 ? m[3].id : '', n > 4 ? m[4].id : '', n > 5 ? m[5].id : '', n > 6 ? m[6].id : '', n > 7 ? m[7].id : '', n > 8 ? m[8].id : '', n > 9 ? m[9].id : '', n > 10 ? m[10].id : '', n > 11 ? m[11].id : '', n > 12 ? m[12].id : '', n > 13 ? m[13].id : '', n > 14 ? m[14].id : '', n > 15 ? m[15].id : '', n > 16 ? m[16].id : '', n > 17 ? m[17].id : '', n > 18 ? m[18].id : '', n > 19 ? m[19].id : '', n > 20 ? m[20].id : '', n > 21 ? m[21].id : '', n > 22 ? m[22].id : '', n > 23 ? m[23].id : '', n > 24 ? m[24].id : '', n > 25 ? m[25].id : '', n > 26 ? m[26].id : '', n > 27 ? m[27].id : '', n > 28 ? m[28].id : '', n > 29 ? m[29].id : ''];
+    }
+    function validDates(dates) {
+      let joined = dates.join(',');
+      return dates.size() <= 92
+        && joined.matches('^([0-9]{4}-[0-9]{2}-[0-9]{2}(,[0-9]{4}-[0-9]{2}-[0-9]{2})*)?$')
+        && (dates.size() == 0 || joined.split(',') == dates);
+    }
+    function validResponse(r) {
+      return r == null || (r is map && r.keys().hasOnly(['dates', 'at'])
+        && r.dates is list && r.get('at', 0) is int && validDates(r.dates));
+    }
+    function validResponses(d, previous) {
+      let ids = memberIds(d);
+      let r = d.responses;
+      let changed = r.diff(previous).affectedKeys();
+      // Each screen saves one response; checking only changed values also keeps
+      // the 30-person case below the rules engine's 1,000-expression limit.
+      return !r.keys().hasAny(['']) && r.keys().hasOnly(ids) && changed.size() <= 1
+        && (changed.size() == 0 || (
+          (!changed.hasAny([ids[0]]) || validResponse(r.get(ids[0], null)))
+          && (!changed.hasAny([ids[1]]) || validResponse(r.get(ids[1], null)))
+          && (!changed.hasAny([ids[2]]) || validResponse(r.get(ids[2], null)))
+          && (!changed.hasAny([ids[3]]) || validResponse(r.get(ids[3], null)))
+          && (!changed.hasAny([ids[4]]) || validResponse(r.get(ids[4], null)))
+          && (!changed.hasAny([ids[5]]) || validResponse(r.get(ids[5], null)))
+          && (!changed.hasAny([ids[6]]) || validResponse(r.get(ids[6], null)))
+          && (!changed.hasAny([ids[7]]) || validResponse(r.get(ids[7], null)))
+          && (!changed.hasAny([ids[8]]) || validResponse(r.get(ids[8], null)))
+          && (!changed.hasAny([ids[9]]) || validResponse(r.get(ids[9], null)))
+          && (!changed.hasAny([ids[10]]) || validResponse(r.get(ids[10], null)))
+          && (!changed.hasAny([ids[11]]) || validResponse(r.get(ids[11], null)))
+          && (!changed.hasAny([ids[12]]) || validResponse(r.get(ids[12], null)))
+          && (!changed.hasAny([ids[13]]) || validResponse(r.get(ids[13], null)))
+          && (!changed.hasAny([ids[14]]) || validResponse(r.get(ids[14], null)))
+          && (!changed.hasAny([ids[15]]) || validResponse(r.get(ids[15], null)))
+          && (!changed.hasAny([ids[16]]) || validResponse(r.get(ids[16], null)))
+          && (!changed.hasAny([ids[17]]) || validResponse(r.get(ids[17], null)))
+          && (!changed.hasAny([ids[18]]) || validResponse(r.get(ids[18], null)))
+          && (!changed.hasAny([ids[19]]) || validResponse(r.get(ids[19], null)))
+          && (!changed.hasAny([ids[20]]) || validResponse(r.get(ids[20], null)))
+          && (!changed.hasAny([ids[21]]) || validResponse(r.get(ids[21], null)))
+          && (!changed.hasAny([ids[22]]) || validResponse(r.get(ids[22], null)))
+          && (!changed.hasAny([ids[23]]) || validResponse(r.get(ids[23], null)))
+          && (!changed.hasAny([ids[24]]) || validResponse(r.get(ids[24], null)))
+          && (!changed.hasAny([ids[25]]) || validResponse(r.get(ids[25], null)))
+          && (!changed.hasAny([ids[26]]) || validResponse(r.get(ids[26], null)))
+          && (!changed.hasAny([ids[27]]) || validResponse(r.get(ids[27], null)))
+          && (!changed.hasAny([ids[28]]) || validResponse(r.get(ids[28], null)))
+          && (!changed.hasAny([ids[29]]) || validResponse(r.get(ids[29], null)))
+        ));
+    }
+    function validEvent(d, previousResponses) {
+      return d.keys().hasOnly(['title', 'start', 'end', 'members', 'responses', 'fixed', 'closed', 'deadline', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['title', 'start', 'end', 'members', 'responses', 'fixed', 'closed', 'createdAt', 'updatedAt'])
+        && d.title is string && d.title.size() > 0 && d.title.size() <= 40
+        && isDate(d.start) && isDate(d.end)
+        && d.members is list && d.members.size() >= 2 && d.members.size() <= 30
+        && d.responses is map && d.responses.size() <= 30 && validResponses(d, previousResponses)
+        && (d.fixed == null || isDate(d.fixed))
+        && d.closed is bool && (d.get('deadline', null) == null || isDate(d.deadline))
+        && d.createdAt is timestamp && d.updatedAt == request.time;
+    }
+    // Proof stays private. Both documents must be written in the same commit;
+    // a timestamp from a preceding commit is never accepted as authorization.
+    function hostProof(id) {
+      let before = get(hostPath(id)).data;
+      let after = getAfter(hostPath(id)).data;
+      return validKey(before.key)
+        && before.get(before.key, null) != request.time
+        && after.get(before.key, null) == request.time;
+    }
+    function deletion(id, d) {
+      return d.keys().hasOnly(['deleted', 'delKey', 'deletedAt'])
+        && d.keys().hasAll(['deleted', 'delKey', 'deletedAt'])
+        && d.deleted == true && d.deletedAt == request.time
+        && validKey(d.delKey) && d.delKey == get(hostPath(id)).data.key;
+    }
+    match /events/{id} {
+      allow get: if true;
+      allow list, delete: if false;
+      allow create: if id.size() >= 10 && validEvent(request.resource.data, {})
+        && request.resource.data.createdAt == request.time
+        && !exists(hostPath(id)) && existsAfter(hostPath(id));
+      allow update: if active(resource.data) && (
+        deletion(id, request.resource.data)
+        || (validEvent(request.resource.data, resource.data.responses)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['responses', 'updatedAt'])
+            || hostProof(id)))
+      );
+    }
+    match /hostkeys/{id} {
+      allow read, delete: if false;
+      allow create: if !exists(eventPath(id)) && existsAfter(eventPath(id))
+        && request.resource.data.keys().hasOnly(['key'])
+        && request.resource.data.keys().hasAll(['key']) && validKey(request.resource.data.key);
+      allow update: if exists(eventPath(id)) && active(get(eventPath(id)).data)
+        && validKey(resource.data.key)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([resource.data.key])
+        && request.resource.data.diff(resource.data).affectedKeys().hasAll([resource.data.key])
+        && request.resource.data[resource.data.key] == request.time;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
