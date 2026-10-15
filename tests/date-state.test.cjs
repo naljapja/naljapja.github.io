@@ -56,10 +56,14 @@ function page() {
     FieldPath: class { constructor(...parts) { this.parts = parts; } },
     serverTimestamp: () => 'SERVER_TIMESTAMP',
     updateDoc: async (...args) => { writes.push(args); },
+    runTransaction: async (_, callback) => callback({
+      get: async () => ({ exists: () => true, data: () => api.S.ev }),
+      update: (...args) => { writes.push(args); },
+    }),
   };
   const context = vm.createContext({
     console, Date: Clock, Node: Element, document, URLSearchParams,
-    window: { scrollTo() {}, scrollY: 0 },
+    window: { scrollTo() {}, scrollY: 0, addEventListener() {}, removeEventListener() {}, confirm: () => true },
     location: { search: '', pathname: '/', origin: 'https://example.test' },
     localStorage: { getItem: key => local.get(key) ?? null, setItem: (key, value) => local.set(key, value) },
     navigator: {}, matchMedia: () => ({ matches: true }),
@@ -168,13 +172,13 @@ test('save removes newly expired unsaved dates, tells the user, and requires con
   p.api.openPick('m1');
   p.click(p.day('2026-10-15'));
   p.click(p.day('2026-10-16'));
-  const save = p.findButton('다 골랐어요 (2일)');
+  const save = p.findButton('선택 저장하기 (2일)');
   p.nextDay();
   await p.click(save);
   assert.equal(p.writes.length, 0);
   assert.deepEqual([...p.api.S.sel], ['2026-10-16']);
   assert.ok(p.toast.textContent.includes('다시 저장'));
-  await p.click(p.findButton('다 골랐어요 (1일)'));
+  await p.click(p.findButton('선택 저장하기 (1일)'));
   assert.equal(p.writes.length, 1);
   assert.deepEqual(Array.from(p.writes[0][2].dates), ['2026-10-16']);
 });
@@ -185,7 +189,7 @@ test('saved historical dates survive an ordinary response edit', async () => {
   p.setEvent({ responses: { m1: { dates: ['2026-10-15'] } } });
   p.api.openPick('m1');
   p.click(p.day('2026-10-16'));
-  await p.click(p.findButton('다 골랐어요 (2일)'));
+  await p.click(p.findButton('선택 저장하기 (2일)'));
   assert.equal(p.writes.length, 1);
   assert.deepEqual(Array.from(p.writes[0][2].dates), ['2026-10-15', '2026-10-16']);
 });
@@ -198,7 +202,7 @@ test('save rechecks the date after Firebase initialization crosses midnight', as
   let ready;
   p.context.__ready = new Promise(resolve => { ready = resolve; });
   vm.runInContext('fb = async () => { await __ready; return FB; };', p.context);
-  const saving = p.click(p.findButton('다 골랐어요 (1일)'));
+  const saving = p.click(p.findButton('선택 저장하기 (1일)'));
   p.nextDay();
   ready();
   await saving;
