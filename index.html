@@ -69,7 +69,7 @@ h2{font-size:19px;line-height:1.35;letter-spacing:-.02em;margin:0;font-weight:80
 .center{text-align:center;display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 0 4px}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:var(--shadow)}
-.card.soft{background:var(--accent-soft);border-color:transparent;box-shadow:none;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.card.soft{background:var(--accent-soft);border-color:transparent;box-shadow:none;display:flex;flex-direction:column;gap:12px}
 .card.soft p{margin:0;font-size:15px}
 
 .cta-bar{position:sticky;bottom:0;z-index:5;margin:auto -16px 0;padding:14px 16px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(to top,var(--bg) 72%,rgba(0,0,0,0));display:flex;flex-direction:column;gap:8px}
@@ -119,6 +119,23 @@ h2{font-size:19px;line-height:1.35;letter-spacing:-.02em;margin:0;font-weight:80
 .chip.ok{background:var(--ok-soft);color:var(--ok-ink);cursor:default}
 button.chip{cursor:pointer}
 .chip .x{border:0;background:none;color:var(--muted);cursor:pointer;padding:0 0 0 4px;font-size:17px;line-height:1}
+.chip.req{background:var(--accent-soft);color:var(--accent)}
+.chip-name{border:0;background:none;padding:0;font:inherit;font-weight:600;color:inherit;cursor:pointer}
+.req-tag{display:inline-block;margin-left:5px;font-size:11px;font-weight:800;color:var(--accent);background:var(--accent-soft);padding:1px 6px;border-radius:999px;vertical-align:2px}
+.name .req-tag{position:absolute;top:8px;left:8px;margin:0}
+.warn{color:var(--sun);font-size:13px;font-weight:700;margin-top:2px}
+.tag{display:inline-block;margin-left:6px;font-size:11px;font-weight:800;color:var(--ok-ink);background:var(--ok-soft);padding:1px 6px;border-radius:999px;vertical-align:2px}
+.deadline-pill{display:inline-flex;align-items:center;margin-top:14px;background:rgba(255,255,255,.22);color:#fff;padding:5px 11px;border-radius:999px;font-size:13.5px;font-weight:700;position:relative}
+.cele-sub2{margin:4px 0 0;font-size:14.5px;opacity:.92;position:relative}
+.soft-actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn-danger{background:transparent;border:1px solid var(--sun);color:var(--sun)}
+.host-sec{display:flex;flex-direction:column;gap:8px}
+.members .acts{display:flex;align-items:center;gap:12px}
+.star{border:0;background:none;cursor:pointer;font-size:13.5px;font-weight:700;color:var(--faint);padding:6px 0}
+.star[aria-pressed="true"]{color:var(--accent)}
+.more{align-self:center;margin-top:4px}
+.grid button.dow{border:0;background:none;font:inherit;font-size:12px;font-weight:700;padding:5px 0;border-radius:8px;cursor:pointer;width:100%;text-decoration:underline dotted;text-underline-offset:3px}
+.grid button.dow:active{background:var(--surface-2)}
 
 .linkbox{display:flex;align-items:center;gap:8px;margin-top:14px;padding:8px 8px 8px 14px;border-radius:14px;background:var(--surface-2)}
 .linkbox .url{flex:1;min-width:0;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:all}
@@ -276,9 +293,12 @@ const store = {
 };
 const hosted = () => store.get('yaksok:hosted', []);
 const isHost = () => hosted().some(x => x.id === S.id);
+// 삭제 열쇠: 약속을 만든 기기에만 저장돼요. 이 열쇠가 있어야 서버가 삭제를 허락해요.
+const hostKey = () => (hosted().find(x => x.id === S.id) || {}).key || null;
 
 // ===== 상태 =====
-const S = { view: 'loading', id: null, ev: null, unsub: null, me: null, sel: new Set(), confirmEmpty: false, saving: false, wasFinal: null, celebrated: '', hostOpen: false, draft: null };
+const S = { view: 'loading', id: null, ev: null, unsub: null, me: null, sel: new Set(), confirmEmpty: false, saving: false, wasFinal: null, celebrated: '', hostOpen: false, draft: null, rankAll: false, deleting: false };
+const dropHosted = id => store.set('yaksok:hosted', hosted().filter(x => x.id !== id));
 
 // ===== 파이어베이스 =====
 let FB = null;
@@ -297,8 +317,11 @@ async function watch() {
     await fb();
     S.unsub?.();
     S.unsub = FB.onSnapshot(evRef(), snap => {
-      if (!snap.exists()) { S.ev = null; if (S.view !== 'created') go('notfound'); return; }
-      S.ev = normalize(snap.data());
+      if (S.deleting) return;
+      if (!snap.exists()) { S.ev = null; dropHosted(S.id); if (S.view !== 'created') go('notfound'); return; }
+      const d = snap.data();
+      if (d.deleted) { S.ev = null; dropHosted(S.id); go('deleted'); return; }
+      S.ev = normalize(d);
       onData();
     }, err => { console.error(err); go('error'); });
   } catch (e) { console.error(e); go('error'); }
@@ -306,29 +329,42 @@ async function watch() {
 function normalize(d) {
   return {
     title: String(d.title || '약속'), start: d.start, end: d.end,
-    members: Array.isArray(d.members) ? d.members.filter(m => m && m.id && m.name) : [],
+    members: Array.isArray(d.members) ? d.members.filter(m => m && m.id && m.name).map(m => ({ id: m.id, name: String(m.name), ...(m.req ? { req: true } : {}) })) : [],
     responses: d.responses && typeof d.responses === 'object' ? d.responses : {},
     fixed: typeof d.fixed === 'string' ? d.fixed : null,
     closed: !!d.closed,
+    deadline: typeof d.deadline === 'string' ? d.deadline : null,
   };
 }
 
 // ===== 계산 =====
+const has = (ev, m, k) => !!(ev.responses[m.id] && (ev.responses[m.id].dates || []).includes(k));
+// 순위: ① 필참 인원이 다 되는지 ② 되는 인원 많은 순 ③ 가까운 날짜 순 (1명 이상 고른 날짜만, 지난 날짜 제외)
 function stats(ev) {
-  const resp = ev.responses;
+  const resp = ev.responses, tk = todayKey();
   const doneMembers = ev.members.filter(m => resp[m.id]);
   const waiting = ev.members.filter(m => !resp[m.id]);
-  const n = doneMembers.length, total = ev.members.length, tk = todayKey();
+  const req = ev.members.filter(m => m.req);
+  const reqWaiting = req.filter(m => !resp[m.id]);
+  const n = doneMembers.length, total = ev.members.length;
   const counts = new Map();
   for (const m of doneMembers) for (const k of (resp[m.id].dates || [])) if (k >= ev.start && k <= ev.end && k >= tk) counts.set(k, (counts.get(k) || 0) + 1);
-  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
-  const full = n ? ranked.filter(([, c]) => c === n).map(([k]) => k).sort() : [];
+  const rows = [...counts.entries()].map(([k, c]) => ({ k, c, no: doneMembers.filter(m => !has(ev, m, k)), reqNo: req.filter(m => resp[m.id] && !has(ev, m, k)) }));
+  rows.sort((a, b) => a.reqNo.length - b.reqNo.length || b.c - a.c || (a.k < b.k ? -1 : 1));
   const allDone = total > 0 && waiting.length === 0;
-  return { n, total, doneMembers, waiting, counts, ranked, full, allDone, final: allDone || ev.closed };
+  const expired = !!ev.deadline && tk > ev.deadline;
+  const top = rows[0];
+  // 짝짝짝 조건: 필참이 있으면 필참 전원이 되는 1위 날짜, 없으면 응답한 사람 전원이 되는 날짜
+  const best = top && (req.length ? !top.reqNo.length && !reqWaiting.length : top.c === n) ? top.k : null;
+  return { n, total, doneMembers, waiting, req, reqWaiting, counts, rows, allDone, expired, best, final: allDone || ev.closed || expired };
 }
-const headline = (ev, st) => ev.fixed || st.full[0] || null;
-const cantOn = (st, k) => st.doneMembers.filter(m => !(S.ev.responses[m.id].dates || []).includes(k)).map(m => m.name);
+const headline = (ev, st) => ev.fixed || st.best || null;
 const myResp = () => S.me && S.ev && S.ev.responses[S.me];
+function dday(ev) {
+  if (!ev.deadline) return '';
+  const d = daysBetween(todayKey(), ev.deadline);
+  return d > 0 ? `D-${d}` : d === 0 ? 'D-day' : '마감됨';
+}
 
 // ===== 화면 전환 =====
 function go(view) { S.view = view; render(false); window.scrollTo(0, 0); }
@@ -370,17 +406,23 @@ function progressCard(st) {
   return h('div', { class: 'card progress-card' },
     h('div', { class: 'between' }, h('strong', null, st.allDone ? '모두 참여했어요!' : `${st.total}명 중 ${st.n}명 완료`), h('span', { class: 'pct' }, pct + '%')),
     h('div', { class: 'progress' + (st.allDone ? ' full' : '') }, h('i', { style: `width:${pct}%` })),
-    h('div', { class: 'chips' }, S.ev.members.map(m => S.ev.responses[m.id] ? h('span', { class: 'chip done' }, '✓ ' + m.name) : h('span', { class: 'chip wait' }, m.name))));
+    h('div', { class: 'chips' }, S.ev.members.map(m => h('span', { class: 'chip ' + (S.ev.responses[m.id] ? 'done' : 'wait') }, (S.ev.responses[m.id] ? '✓ ' : '') + (m.req ? '★' : '') + m.name))),
+    st.req.length ? h('p', { class: 'note' }, '★ = 필참') : null);
 }
-function topDates(st, title, host) {
-  return h('div', { class: 'card' }, h('h2', { class: 'h-sm' }, title),
-    h('ol', { class: 'rank' }, st.ranked.slice(0, 3).map(([k, c], i) => {
-      const no = cantOn(st, k);
-      return h('li', null, h('span', { class: 'medal' }, i + 1),
-        h('div', null, h('strong', null, fmt(k)), h('div', { class: 'meta' }, no.length ? `${no.join(', ')} 안 됨` : '모두 가능')),
-        h('span', { class: 'cnt' }, `${c}/${st.n}`),
-        host ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => fixDate(k) }, '이 날로') : null);
-    })));
+function rankCard(st, title, host) {
+  if (!st.rows.length) return null;
+  const list = S.rankAll ? st.rows : st.rows.slice(0, 5);
+  return h('div', { class: 'card' },
+    h('div', { class: 'between', style: 'margin-bottom:4px' }, h('h2', { class: 'h-sm', style: 'margin:0' }, title), h('span', { class: 'meta' }, `${st.n}명 응답 기준`)),
+    h('ol', { class: 'rank' }, list.map((r, i) => h('li', null,
+      h('span', { class: 'medal' }, i + 1),
+      h('div', null,
+        h('strong', null, fmt(r.k), r.k === S.ev.fixed ? h('span', { class: 'tag' }, '확정') : null),
+        h('div', { class: 'meta' }, r.no.length ? `${r.no.map(m => m.name).join(', ')} 안 됨` : '모두 가능'),
+        r.reqNo.length ? h('div', { class: 'warn' }, `필참 ${r.reqNo.map(m => m.name).join(', ')} 안 됨`) : null),
+      h('span', { class: 'cnt' }, `${r.c}/${st.n}`),
+      host && r.k !== S.ev.fixed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => fixDate(r.k) }, '이 날로') : null))),
+    st.rows.length > 5 ? h('button', { class: 'btn btn-text more', type: 'button', onclick: () => { S.rankAll = !S.rankAll; render(true); } }, S.rankAll ? '접기' : `더 보기 (${st.rows.length - 5}개)`) : null);
 }
 function dateTable(st) {
   const rows = [...st.counts.keys()].sort();
@@ -391,19 +433,31 @@ function dateTable(st) {
 function hostPanel(st) {
   const ev = S.ev;
   const input = h('input', { class: 'input', placeholder: '추가할 이름', maxlength: '12', autocomplete: 'off', onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addMember(input); } } });
+  const dl = h('input', { class: 'input', type: 'date', value: ev.deadline || '', min: todayKey(), max: ev.end, 'aria-label': '응답 마감 기한' });
   return h('details', { class: 'card', open: S.hostOpen, ontoggle: e => { S.hostOpen = e.currentTarget.open; } },
     h('summary', null, '주최자 메뉴'),
     h('div', { class: 'host-body' },
       h('div', { class: 'host-actions' },
         h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: share }, '링크 공유'),
+        st.waiting.length && !st.final ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => nudge(st) }, '재촉 문구 복사') : null,
         !st.final ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: closeEvent }, '지금 마감하고 결과 보기') : null,
-        ev.closed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: reopenEvent }, '응답 다시 받기') : null,
+        ev.closed || st.expired ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => reopenEvent(st) }, '응답 다시 받기') : null,
         ev.fixed ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => fixDate(null) }, '확정 취소') : null),
-      h('div', { class: 'label' }, `참여자 ${ev.members.length}명`),
-      h('ul', { class: 'members' }, ev.members.map(m => h('li', null,
-        h('span', null, m.name, ev.responses[m.id] ? h('span', { class: 'mini-done' }, ' · 완료') : null),
-        h('button', { class: 'x', type: 'button', onclick: e => removeMember(m, e.currentTarget) }, '빼기')))),
-      h('div', { class: 'row' }, input, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => addMember(input) }, '추가'))));
+      h('div', { class: 'host-sec' }, h('div', { class: 'label' }, '응답 마감 기한'),
+        h('div', { class: 'row' }, dl,
+          h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => setDeadline(dl.value || null) }, '저장'),
+          ev.deadline ? h('button', { class: 'btn btn-text btn-sm', type: 'button', onclick: () => setDeadline(null) }, '없애기') : null)),
+      h('div', { class: 'host-sec' }, h('div', { class: 'label' }, `참여자 ${ev.members.length}명`),
+        h('p', { class: 'note' }, '★을 누르면 필참이 돼요. 필참 인원이 다 되는 날이 순위 위로 올라와요.'),
+        h('ul', { class: 'members' }, ev.members.map(m => h('li', null,
+          h('span', null, m.name, ev.responses[m.id] ? h('span', { class: 'mini-done' }, ' · 완료') : null),
+          h('span', { class: 'acts' },
+            h('button', { class: 'star', type: 'button', 'aria-pressed': String(!!m.req), onclick: () => toggleReq(m) }, m.req ? '★ 필참' : '☆ 필참'),
+            h('button', { class: 'x', type: 'button', onclick: e => removeMember(m, e.currentTarget) }, '빼기'))))),
+        h('div', { class: 'row' }, input, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => addMember(input) }, '추가'))),
+      hostKey() ? h('div', { class: 'host-sec' },
+        h('button', { class: 'btn btn-danger btn-sm', type: 'button', style: 'align-self:flex-start', onclick: e => deleteEvent(e.currentTarget) }, '약속 삭제'),
+        h('p', { class: 'note' }, '지우면 참여자들도 더 이상 볼 수 없고, 입력한 이름과 날짜도 같이 지워져요.')) : null));
 }
 
 // ===== 화면들 =====
@@ -427,7 +481,7 @@ function home() {
     ctaBar(btn('새 약속 만들기', () => { resetDraft(); go('create'); })));
 }
 
-function resetDraft() { const t = new Date(); S.draft = { title: '', start: keyOf(t), end: keyOf(addDays(t, 27)), names: [] }; }
+function resetDraft() { const t = new Date(); S.draft = { title: '', start: keyOf(t), end: keyOf(addDays(t, 27)), names: [], req: new Set(), deadline: null }; }
 function create() {
   if (!S.draft) resetDraft();
   const D = S.draft;
@@ -439,6 +493,9 @@ function create() {
   const end = h('input', { class: 'input', type: 'date', value: D.end, onchange: e => { D.end = e.target.value; sync(); } });
   const presets = [['2주', 13], ['4주', 27], ['두 달', 59]].map(([l, n]) => h('button', { class: 'pill', type: 'button', onclick: () => { if (!D.start) return; D.end = keyOf(addDays(parseKey(D.start), n)); end.value = D.end; sync(); } }, l));
   const nm = h('input', { class: 'input', placeholder: '이름 (쉼표로 여러 명 한번에)', maxlength: '80', autocomplete: 'off', enterkeyhint: 'enter', oninput: sync, onkeydown: e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } } });
+  const dl = h('input', { class: 'input', type: 'date', value: D.deadline || '', min: todayKey(), 'aria-label': '응답 마감일', onchange: e => { D.deadline = e.target.value || null; sync(); } });
+  const dlPresets = [['없음', null], ['3일 뒤', 3], ['1주 뒤', 7]].map(([l, n]) => h('button', { class: 'pill', type: 'button', onclick: () => { D.deadline = n == null ? null : keyOf(addDays(new Date(), n)); dl.value = D.deadline || ''; sync(); } }, l));
+  const dlInfo = h('p', { class: 'note' });
   const make = btn('약속 만들고 링크 받기', submit);
   const pending = () => nm.value.split(/[,，\n]+|\s+/).map(s => s.trim().slice(0, 12)).filter(Boolean);
   function add() {
@@ -446,15 +503,21 @@ function create() {
     nm.value = ''; sync();
   }
   function sync() {
-    chips.replaceChildren(...D.names.map((n, i) => h('span', { class: 'chip' }, n, h('button', { class: 'x', type: 'button', 'aria-label': n + ' 빼기', onclick: () => { D.names.splice(i, 1); sync(); } }, '×'))));
+    chips.replaceChildren(...D.names.map((n, i) => h('span', { class: 'chip' + (D.req.has(n) ? ' req' : '') },
+      h('button', { class: 'chip-name', type: 'button', 'aria-pressed': String(D.req.has(n)), 'aria-label': `${n} 필참 ${D.req.has(n) ? '해제' : '지정'}`, onclick: () => { if (D.req.has(n)) D.req.delete(n); else D.req.add(n); sync(); } }, (D.req.has(n) ? '★ ' : '') + n),
+      h('button', { class: 'x', type: 'button', 'aria-label': n + ' 빼기', onclick: () => { D.names.splice(i, 1); D.req.delete(n); sync(); } }, '×'))));
     end.min = D.start || todayKey();
+    dl.max = D.end || '';
     const span = D.start && D.end && D.end >= D.start ? daysBetween(D.start, D.end) + 1 : 0;
     rangeInfo.textContent = span ? `${fmt(D.start)} ~ ${fmt(D.end)} · ${span}일` : '';
+    dlInfo.textContent = D.deadline ? `${fmt(D.deadline)}까지 받고, 지나면 자동으로 마감돼요.` : '마감 없이 명단에 있는 사람이 다 고를 때까지 기다려요.';
     const count = new Set([...D.names, ...pending()]).size;
     let msg = '';
     if (span > 92) msg = '기간은 최대 92일까지 고를 수 있어요.';
+    else if (D.deadline && D.deadline < todayKey()) msg = '응답 마감일은 오늘 이후로 정해주세요.';
+    else if (D.deadline && D.end && D.deadline > D.end) msg = '응답 마감일은 날짜 범위 마지막 날보다 늦을 수 없어요.';
     err.textContent = msg;
-    make.disabled = S.saving || !D.title.trim() || !span || span > 92 || count < 2;
+    make.disabled = S.saving || !!msg || !D.title.trim() || !span || count < 2;
   }
   async function submit() {
     add();
@@ -462,10 +525,13 @@ function create() {
     S.saving = true; sync(); make.textContent = '만드는 중…';
     try {
       await fb();
-      const id = rid(12);
-      const data = { title: D.title.trim(), start: D.start, end: D.end, members: D.names.map(n => ({ id: 'm' + rid(6), name: n })), responses: {}, fixed: null, closed: false };
-      await FB.setDoc(FB.doc(FB.db, 'events', id), { ...data, createdAt: FB.serverTimestamp(), updatedAt: FB.serverTimestamp() });
-      store.set('yaksok:hosted', [...hosted().filter(x => x.id !== id), { id, title: data.title, start: data.start, end: data.end }].slice(-30));
+      const id = rid(12), key = rid(24);
+      const data = { title: D.title.trim(), start: D.start, end: D.end, members: D.names.map(n => ({ id: 'm' + rid(6), name: n, ...(D.req.has(n) ? { req: true } : {}) })), responses: {}, fixed: null, closed: false, deadline: D.deadline || null };
+      const batch = FB.writeBatch(FB.db);
+      batch.set(FB.doc(FB.db, 'events', id), { ...data, createdAt: FB.serverTimestamp(), updatedAt: FB.serverTimestamp() });
+      batch.set(FB.doc(FB.db, 'hostkeys', id), { key });
+      await batch.commit();
+      store.set('yaksok:hosted', [...hosted().filter(x => x.id !== id), { id, title: data.title, start: data.start, end: data.end, key }].slice(-30));
       history.replaceState(null, '', '?id=' + id);
       S.id = id; S.me = null; S.ev = normalize(data); S.wasFinal = false; S.draft = null;
       go('created');
@@ -488,7 +554,11 @@ function create() {
       h('div', { class: 'field' }, h('span', { class: 'label' }, '누구랑 볼까요? (참여자 명단)'),
         h('div', { class: 'row' }, nm, h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: add, style: 'min-height:52px' }, '추가')),
         chips,
-        h('p', { class: 'note' }, '내 이름도 꼭 넣어주세요. 명단에 있는 사람이 다 고르면 결과가 떠요.'))),
+        h('p', { class: 'note' }, '내 이름도 꼭 넣어주세요. 꼭 와야 하는 사람은 이름을 눌러 ★필참으로 표시해요.')),
+      h('div', { class: 'field' }, h('span', { class: 'label' }, '응답 마감일 (선택)'),
+        dl,
+        h('div', { class: 'pills' }, dlPresets),
+        dlInfo)),
     err,
     privacy(),
     ctaBar(make));
@@ -502,9 +572,10 @@ function created() {
     h('div', { class: 'card' },
       h('div', { class: 'ev-title' }, ev.title),
       h('div', { class: 'meta' }, `${fmt(ev.start)} ~ ${fmt(ev.end)}`),
-      h('div', { class: 'meta' }, `참여자 ${ev.members.length}명 · ${ev.members.map(m => m.name).join(', ')}`),
+      h('div', { class: 'meta' }, `참여자 ${ev.members.length}명 · ${ev.members.map(m => (m.req ? '★' : '') + m.name).join(', ')}`),
+      ev.deadline ? h('div', { class: 'meta' }, `응답 마감 ${fmt(ev.deadline)} · ${dday(ev)}`) : null,
       h('div', { class: 'linkbox' }, h('span', { class: 'url' }, url), h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => copy(url, '링크를 복사했어요') }, '복사'))),
-    h('p', { class: 'note', style: 'text-align:center' }, '이 기기에서는 주최자 메뉴(마감·확정·명단 수정)를 쓸 수 있어요.'),
+    h('p', { class: 'note', style: 'text-align:center' }, '이 기기에서는 주최자 메뉴(마감·확정·명단 수정·삭제)를 쓸 수 있어요.'),
     ctaBar(btn('링크 공유하기', share), btn('나도 날짜 고르기', () => go('who'), 'btn-ghost')));
 }
 
@@ -516,7 +587,8 @@ function intro() {
     h('div', { class: 'intro-card' },
       h('span', { class: 'eyebrow' }, '약속 날짜 정하기'),
       h('h1', null, ev.title),
-      h('p', null, `${fmt(ev.start)} ~ ${fmt(ev.end)} 중에`, h('br'), '되는 날을 모두 골라주세요.')),
+      h('p', null, `${fmt(ev.start)} ~ ${fmt(ev.end)} 중에`, h('br'), '되는 날을 모두 골라주세요.'),
+      ev.deadline ? h('span', { class: 'deadline-pill' }, `응답 마감 ${fmtShort(ev.deadline)} · ${dday(ev)}`) : null),
     progressCard(st),
     h('ol', { class: 'steps card' },
       step('1', '이름 고르기', '명단에서 내 이름을 눌러요'),
@@ -535,7 +607,7 @@ function who() {
     topBar(() => go('intro')),
     h('h1', null, '누구세요?'),
     h('p', { class: 'sub' }, '내 이름을 눌러주세요. 이미 고른 사람도 다시 눌러서 수정할 수 있어요.'),
-    h('div', { class: 'names' }, ev.members.map(m => h('button', { class: 'name' + (m.id === S.me ? ' me' : ''), type: 'button', onclick: () => openPick(m.id) }, m.name, ev.responses[m.id] ? h('span', { class: 'badge' }, '완료') : null))),
+    h('div', { class: 'names' }, ev.members.map(m => h('button', { class: 'name' + (m.id === S.me ? ' me' : ''), type: 'button', onclick: () => openPick(m.id) }, m.req ? h('span', { class: 'req-tag' }, '필참') : null, m.name, ev.responses[m.id] ? h('span', { class: 'badge' }, '완료') : null))),
     h('p', { class: 'note' }, '명단에 내 이름이 없으면 약속 만든 사람에게 추가해 달라고 해주세요.'));
 }
 function openPick(mid) {
@@ -571,6 +643,14 @@ function pick() {
     el.setAttribute('aria-pressed', String(S.sel.has(k)));
     S.confirmEmpty = false; sync();
   }
+  function toggleDow(i) {
+    const ks = open.filter(k => parseKey(k).getDay() === i);
+    if (!ks.length) return;
+    const all = ks.every(k => S.sel.has(k));
+    ks.forEach(k => all ? S.sel.delete(k) : S.sel.add(k));
+    S.confirmEmpty = false; render(true);
+    toast(`${DOW[i]}요일 ${ks.length}일을 ${all ? '뺐어요' : '골랐어요'}`);
+  }
   async function save() {
     if (!S.sel.size && !S.confirmEmpty) { S.confirmEmpty = true; sync(); return; }
     S.saving = true; sync();
@@ -591,7 +671,7 @@ function pick() {
   return screen(
     topBar(() => go('who')),
     h('div', null, h('h1', null, `${me.name}님, 되는 날을`, h('br'), '모두 골라주세요'),
-      h('p', { class: 'sub', style: 'margin-top:8px' }, '많이 고를수록 다 같이 되는 날을 찾기 쉬워요.')),
+      h('p', { class: 'sub', style: 'margin-top:8px' }, me.req ? '필참으로 지정돼 있어요. 되는 날을 빠짐없이 골라주세요.' : '많이 고를수록 다 같이 되는 날을 찾기 쉬워요.')),
     h('div', { class: 'toolbar' }, countEl, h('div', { class: 'tools' },
       h('button', { class: 'pill', type: 'button', onclick: () => { open.forEach(k => S.sel.add(k)); S.confirmEmpty = false; render(true); } }, '전체 선택'),
       h('button', { class: 'pill', type: 'button', onclick: () => { S.sel.clear(); render(true); } }, '전체 해제'))),
@@ -600,7 +680,7 @@ function pick() {
       return h('div', { class: 'month' },
         h('h3', null, (first.getFullYear() !== thisYear ? first.getFullYear() + '년 ' : '') + (first.getMonth() + 1) + '월'),
         h('div', { class: 'grid' },
-          DOW.map((d, i) => h('div', { class: 'dow' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') }, d)),
+          DOW.map((d, i) => h('button', { class: 'dow' + (i === 0 ? ' sun' : i === 6 ? ' sat' : ''), type: 'button', 'aria-label': `${d}요일 전부 선택`, onclick: () => toggleDow(i) }, d)),
           Array.from({ length: first.getDay() }, () => h('div', { class: 'blank', 'aria-hidden': 'true' })),
           g.keys.map(k => {
             const d = parseKey(k), dow = d.getDay(), c = others.get(k) || 0;
@@ -612,7 +692,7 @@ function pick() {
             }, h('span', { class: 'n' }, d.getDate()), c ? h('span', { class: 'c' }, c + '명') : null);
           })));
     })),
-    h('p', { class: 'legend' }, h('span', null, h('i', { class: 'sw' }), '내가 고른 날'), h('span', null, 'N명 = 다른 사람이 고른 수')),
+    h('p', { class: 'legend' }, h('span', null, h('i', { class: 'sw' }), '내가 고른 날'), h('span', null, 'N명 = 다른 사람이 고른 수'), h('span', null, '요일 글자를 누르면 그 요일 전부 선택')),
     ctaBar(cta));
 }
 
@@ -625,8 +705,12 @@ function done() {
     h('div', { class: 'center' }, h('div', { class: 'big-check', html: CHECK_SVG }), h('h1', null, '저장했어요!'),
       h('p', { class: 'sub' }, me ? (mine ? `${me.name}님은 ${mine}일 골랐어요.` : `${me.name}님은 되는 날이 없다고 저장했어요.`) : '', h('br'), '모두 고르면 이 화면에서 바로 결과가 떠요.')),
     progressCard(st),
-    st.waiting.length ? h('div', { class: 'card soft' }, h('p', null, h('strong', null, st.waiting.map(m => m.name).join(', ')), '님이 아직이에요.'), h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: share }, '링크 보내기')) : null,
-    st.n >= 2 && st.ranked.length ? topDates(st, '지금까지 많이 되는 날', false) : null,
+    st.waiting.length ? h('div', { class: 'card soft' },
+      h('p', null, h('strong', null, st.waiting.map(m => m.name).join(', ')), '님이 아직이에요.', ev.deadline ? ` (응답 마감 ${dday(ev)})` : ''),
+      h('div', { class: 'soft-actions' },
+        h('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => nudge(st) }, '재촉 문구 복사'),
+        h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: share }, '링크만 보내기'))) : null,
+    rankCard(st, '지금까지 순위', false),
     isHost() ? hostPanel(st) : null,
     ctaBar(btn('내 선택 수정하기', () => openPick(S.me), 'btn-ghost')));
 }
@@ -634,25 +718,31 @@ function done() {
 function result() {
   const ev = S.ev, st = stats(ev), host = isHost();
   const head = headline(ev, st);
+  const why = st.allDone ? `${st.total}명 모두 참여했어요` : (st.expired && !ev.closed ? '응답 마감일이 지났어요' : '응답 마감') + ` · ${st.total}명 중 ${st.n}명 참여`;
   const parts = [];
   if (head) {
-    const no = cantOn(st, head);
+    const row = st.rows.find(r => r.k === head);
+    const no = row ? row.no.map(m => m.name) : st.doneMembers.map(m => m.name);
+    let msg = '이날 만나요!', sub = null;
+    if (!no.length) msg = st.waiting.length ? `응답한 ${st.n}명은 모두 이날 돼요!` : '이날 다 같이 볼 수 있어요!';
+    else sub = `${no.join(', ')} 빼고` + (st.req.length && row && !row.reqNo.length ? ' · 필참 인원은 모두 돼요' : '');
     parts.push(h('div', { class: 'celebrate' },
       h('div', { class: 'clap', 'aria-hidden': 'true' }, '👏'),
       h('div', { class: 'jjak' }, '짝짝짝!'),
-      h('p', { class: 'cele-sub' }, st.allDone ? `${st.total}명 모두 참여했어요` : `응답 마감 · ${st.total}명 중 ${st.n}명 참여`),
+      h('p', { class: 'cele-sub' }, why),
       h('div', { class: 'hero-date' }, fmt(head)),
-      h('p', { class: 'cele-msg' }, no.length ? `이날 만나요! (${no.join(', ')} 빼고)` : st.waiting.length ? `응답한 ${st.n}명은 모두 이날 돼요!` : '이날 다 같이 볼 수 있어요!'),
+      h('p', { class: 'cele-msg' }, msg),
+      sub ? h('p', { class: 'cele-sub2' }, sub) : null,
       ev.fixed ? h('span', { class: 'fixed-tag' }, '주최자 확정') : null));
-    const more = st.full.filter(k => k !== head);
-    if (more.length) parts.push(h('div', { class: 'card' }, h('h2', { class: 'h-sm' }, '이날도 다 돼요'),
-      h('div', { class: 'chips' }, more.map(k => host ? h('button', { class: 'chip ok', type: 'button', onclick: () => fixDate(k) }, fmtShort(k) + ' · 이 날로') : h('span', { class: 'chip ok' }, fmtShort(k)))),
-      host ? h('p', { class: 'note', style: 'margin-top:10px' }, '날짜를 누르면 그날로 확정돼요.') : null));
   } else {
-    parts.push(h('div', { class: 'card nope' }, h('div', { class: 'emoji', 'aria-hidden': 'true' }, '🥲'), h('h2', null, '모두 되는 날은 없어요'),
-      h('p', { class: 'sub' }, st.ranked.length ? (host ? '가장 많이 되는 날 중에서 골라 확정할 수 있어요.' : '가장 많이 되는 날은 이때예요.') : '아직 고른 날짜가 없어요.')));
-    if (st.ranked.length) parts.push(topDates(st, '가장 많이 되는 날', host));
+    const t = !st.rows.length ? '아직 고른 날짜가 없어요'
+      : st.req.length ? (st.reqWaiting.length ? `필참 ${st.reqWaiting.map(m => m.name).join(', ')}님이 아직 안 골랐어요` : '필참 인원이 다 되는 날이 없어요')
+      : '모두 되는 날은 없어요';
+    parts.push(h('div', { class: 'card nope' }, h('div', { class: 'emoji', 'aria-hidden': 'true' }, '🥲'), h('h2', null, t),
+      h('p', { class: 'sub' }, why),
+      st.rows.length ? h('p', { class: 'sub' }, host ? '아래 순위에서 골라 확정할 수 있어요.' : '아래 순위를 참고해 주세요.') : null));
   }
+  parts.push(rankCard(st, '날짜 순위', host));
   if (st.waiting.length) parts.push(h('p', { class: 'note' }, `응답 안 한 사람: ${st.waiting.map(m => m.name).join(', ')}`));
   parts.push(h('details', { class: 'card' }, h('summary', null, '날짜별로 누가 되는지 보기'), dateTable(st)));
   if (host) parts.push(hostPanel(st));
@@ -665,7 +755,7 @@ function result() {
 
 function notfound() {
   return screen(topBar(),
-    h('div', { class: 'center', style: 'padding-top:40px' }, h('div', { class: 'emoji' }, '🔍'), h('h1', null, '약속을 찾을 수 없어요'), h('p', { class: 'sub' }, '링크가 잘렸거나 잘못된 주소일 수 있어요.', h('br'), '받은 링크를 다시 눌러주세요.')),
+    h('div', { class: 'center', style: 'padding-top:40px' }, h('div', { class: 'emoji' }, '🔍'), h('h1', null, '약속을 찾을 수 없어요'), h('p', { class: 'sub' }, '링크가 잘렸거나 잘못된 주소일 수 있어요.', h('br'), '받은 링크를 다시 확인해 주세요.')),
     ctaBar(btn('새 약속 만들기', () => { location.href = location.pathname; })));
 }
 function error() {
@@ -673,14 +763,52 @@ function error() {
     h('div', { class: 'center', style: 'padding-top:40px' }, h('div', { class: 'emoji' }, '📡'), h('h1', null, '연결이 불안정해요'), h('p', { class: 'sub' }, '인터넷 연결을 확인하고 다시 시도해 주세요.')),
     ctaBar(btn('다시 시도', () => location.reload())));
 }
-const VIEWS = { loading, home, create, created, intro, who, pick, done, result, notfound, error };
+function deleted() {
+  return screen(topBar(),
+    h('div', { class: 'center', style: 'padding-top:40px' }, h('div', { class: 'emoji' }, '🗑️'), h('h1', null, '삭제된 약속이에요'), h('p', { class: 'sub' }, '약속을 만든 사람이 이 약속을 지웠어요.', h('br'), '입력했던 이름과 날짜도 함께 지워졌어요.')),
+    ctaBar(btn('새 약속 만들기', () => { location.href = location.pathname; })));
+}
+const VIEWS = { loading, home, create, created, intro, who, pick, done, result, notfound, error, deleted };
 
 // ===== 주최자 기능 =====
 const fail = e => { console.error(e); toast('처리하지 못했어요. 다시 시도해 주세요.'); };
 async function patch(obj) { await fb(); await FB.updateDoc(evRef(), { ...obj, updatedAt: FB.serverTimestamp() }); }
 async function fixDate(k) { try { await patch({ fixed: k }); if (k) { toast('확정했어요: ' + fmt(k));if (S.view !== 'result' && stats(S.ev).final) go('result'); } } catch (e) { fail(e); } }
 async function closeEvent() { try { await patch({ closed: true }); go('result'); } catch (e) { fail(e); } }
-async function reopenEvent() { try { await patch({ closed: false, fixed: null }); toast('다시 응답을 받을게요'); } catch (e) { fail(e); } }
+async function reopenEvent(st) {
+  const clearDl = !!(st && st.expired);
+  try { await patch({ closed: false, fixed: null, ...(clearDl ? { deadline: null } : {}) }); toast(clearDl ? '다시 응답을 받을게요 (지난 마감일은 없앴어요)' : '다시 응답을 받을게요'); } catch (e) { fail(e); }
+}
+async function setDeadline(k) {
+  if (k && k < todayKey()) return toast('응답 마감일은 오늘 이후로 정해주세요');
+  if (k && k > S.ev.end) return toast('응답 마감일은 날짜 범위 마지막 날보다 늦을 수 없어요');
+  try { await patch({ deadline: k }); toast(k ? '응답 마감일: ' + fmt(k) : '응답 마감일을 없앴어요'); } catch (e) { fail(e); }
+}
+async function toggleReq(m) {
+  try { await patch({ members: S.ev.members.map(x => x.id !== m.id ? x : (x.req ? { id: x.id, name: x.name } : { id: x.id, name: x.name, req: true })) }); } catch (e) { fail(e); }
+}
+async function deleteEvent(el) {
+  if (el.dataset.armed !== '1') {
+    el.dataset.armed = '1'; el.textContent = '정말 삭제할까요? 한 번 더 누르면 지워져요';
+    setTimeout(() => { if (el.isConnected) { el.dataset.armed = ''; el.textContent = '약속 삭제'; } }, 4000);
+    return;
+  }
+  const id = S.id, key = hostKey();
+  if (!key) return toast('이 약속은 만든 기기에서만 지울 수 있어요');
+  try {
+    S.deleting = true; if (S.unsub) S.unsub(); S.unsub = null;
+    // 내용을 비우고 '삭제됨' 표시만 남겨요. 서버 규칙이 삭제 열쇠를 확인해요.
+    await fb(); await FB.setDoc(evRef(), { deleted: true, delKey: key, deletedAt: FB.serverTimestamp() });
+    dropHosted(id); store.set('yaksok:me:' + id, null);
+    history.replaceState(null, '', location.pathname);
+    S.id = null; S.ev = null; S.me = null; S.deleting = false; S.wasFinal = null;
+    go('home'); toast('약속을 삭제했어요');
+  } catch (e) { S.deleting = false; watch(); fail(e); }
+}
+function nudge(st) {
+  const ev = S.ev, tail = ev.deadline && !st.expired ? ` (마감 ${fmtShort(ev.deadline)}, ${dday(ev)})` : '';
+  copy(`[${ev.title}] ${st.waiting.map(m => m.name).join(', ')}님 아직이에요! 되는 날 골라주세요${tail}\n${eventUrl()}`, '재촉 문구를 복사했어요. 단톡방에 붙여넣어 주세요!');
+}
 async function addMember(input) {
   const n = input.value.trim().slice(0, 12);
   if (!n) return;
@@ -719,7 +847,7 @@ function maybeCelebrate() {
   if (S.view !== 'result' || !S.ev) return;
   const st = stats(S.ev), head = headline(S.ev, st);
   const key = `${S.id}|${head}|${st.n}`;
-  if (head && S.celebrated !== key) { S.celebrated = key; confetti(); try { navigator.vibrate && navigator.vibrate([30, 60, 30]); } catch {} }
+  if (head && S.celebrated !== key) { S.celebrated = key; confetti(); try { if (navigator.vibrate && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) navigator.vibrate([30, 60, 30]); } catch {} }
 }
 function confetti() {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -752,6 +880,11 @@ function confetti() {
 }
 
 // ===== 시작 =====
+// 마감일이 지나는 순간(자정)에도 화면이 결과로 넘어가도록 1분마다 확인
+setInterval(() => {
+  if (!S.ev || ['loading', 'created', 'create', 'home', 'notfound', 'error'].includes(S.view)) return;
+  if (stats(S.ev).final !== S.wasFinal) onData();
+}, 60000);
 (function boot() {
   const id = new URLSearchParams(location.search).get('id');
   if (id && /^[a-z0-9]{10,24}$/.test(id)) {
