@@ -379,7 +379,7 @@ function render(soft) {
   if (soft) scr.classList.add('static');
   $app.replaceChildren(scr);
   if (soft) window.scrollTo(0, y);
-  if (S.ev) document.title = `${S.ev.title} · ${BRAND}`;
+  document.title = S.ev ? `${S.ev.title} · ${BRAND}` : `${BRAND} · 다 같이 되는 날 찾기`;
   maybeCelebrate();
 }
 document.addEventListener('focusout', () => { if (deferred) { deferred = false; setTimeout(() => render(true), 250); } });
