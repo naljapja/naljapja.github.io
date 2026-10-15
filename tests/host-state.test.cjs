@@ -27,38 +27,54 @@ function storeContext(initial = []) {
 }
 function fakeDatabase(initial) {
   let saved = clone(initial), version = 0, attempts = 0, writes = 0, nextId = 0;
+  const transactions = [];
+  const ownerKey = 'OwnerKey_1234567890-abcd';
   return {
     get saved() { return clone(saved); },
     get writes() { return writes; },
     get attempts() { return attempts; },
-    client() {
+    transactions,
+    ownerKey,
+    client({ key = ownerKey } = {}) {
       const toasts = [], errors = [];
       const c = vm.createContext({
         S: { id: 'fixture12345', ev: clone(initial) },
-        fb: async () => {}, evRef: () => 'fixture12345', rid: () => 'new' + (++nextId),
+        fb: async () => {}, evRef: () => 'events/fixture12345', rid: () => 'new' + (++nextId), hostKey: () => key,
         toast: message => toasts.push(message), console: { error: e => errors.push(e) },
         setTimeout, todayKey: () => '2026-10-15',
         FB: {
           db: {}, serverTimestamp: () => 'server-time', deleteField: () => ({ deleteSentinel: true }),
+          doc: (_, collection, id) => collection + '/' + id,
+          FieldPath: class { constructor(...parts) { this.parts = parts; } },
           async runTransaction(_, callback) {
             for (let retry = 0; retry < 10; retry++) {
               attempts++;
-              let readVersion, updates;
+              let readVersion;
+              const operations = [];
               const result = await callback({
-                async get() {
+                async get(ref) {
+                  assert.equal(ref, 'events/fixture12345');
                   readVersion = version;
                   const snapshot = clone(saved);
                   return { exists: () => snapshot !== null, data: () => clone(snapshot) };
                 },
-                update(_, value) { updates = value; },
+                update(ref, ...args) { operations.push({ ref, args }); },
               });
               if (version !== readVersion) continue;
-              if (updates) {
+              const eventOperation = operations.find(op => op.ref === 'events/fixture12345');
+              const proof = operations.find(op => op.ref === 'hostkeys/fixture12345');
+              if (eventOperation) {
+                assert.ok(proof, 'an owner event write has a private authorization write in the same transaction');
+                assert.deepEqual(Array.from(proof.args[0].parts), [ownerKey]);
+                assert.equal(proof.args[1], 'server-time');
+                const updates = eventOperation.args[0];
+                assert.ok(!JSON.stringify(updates).includes(ownerKey), 'the secret never appears in the public event');
                 for (const [key, value] of Object.entries(updates)) {
                   if (key.startsWith('responses.') && value.deleteSentinel) delete saved.responses[key.slice(10)];
                   else saved[key] = clone(value);
                 }
                 version++; writes++;
+                transactions.push(operations);
               }
               return result;
             }
