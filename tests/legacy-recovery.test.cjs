@@ -55,7 +55,7 @@ function page(records = original()) {
         local.set(key, value);
       },
     },
-    window: { scrollTo() {}, scrollY: 0 },
+    window: { scrollTo() {}, scrollY: 0, addEventListener() {}, removeEventListener() {}, confirm: () => true },
     location: { search: '', pathname: '/', origin: 'https://example.test' },
     navigator: {}, matchMedia: () => ({ matches: true }),
     setInterval() {}, setTimeout() { return 1; }, clearTimeout() {},
