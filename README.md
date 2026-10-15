@@ -15,3 +15,16 @@
 ## 구성
 - 페이지: `index.html` 한 장 (GitHub Pages로 배포)
 - 데이터: Firebase Cloud Firestore (프로젝트 `yaksok-191a7`, 서울 리전)
+
+## 개발 중 확인하기
+
+사이트는 별도 빌드 없이 `index.html`을 정적 서버에서 열면 돼요.
+Node.js 24 기준으로 다음 명령을 실행하면 회귀 테스트 19개를 확인할 수 있어요.
+
+```sh
+node --test --test-isolation=none tests/*.test.cjs
+```
+
+테스트는 실제 페이지 코드를 분리된 DOM·시계·저장소에서 실행해요.
+Firebase는 가짜 구현을 사용하므로 실제 약속을 읽거나 수정하지 않아요.
+배포된 Firestore 보안 규칙의 허용·거부 동작은 별도로 확인해야 해요.
